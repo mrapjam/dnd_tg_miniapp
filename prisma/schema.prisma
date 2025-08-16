@@ -1,0 +1,47 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Game {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  gmTgId    String
+  createdAt DateTime @default(now())
+
+  players   Player[]
+  rolls     Roll[]
+}
+
+model Player {
+  id        String   @id @default(cuid())
+  gameId    String
+  userTgId  String
+  name      String?
+  hp        Int      @default(10)
+  gold      Int      @default(0)
+  skills    Json     @default("[]")
+  photo     String?
+
+  game      Game     @relation(fields: [gameId], references: [id])
+  rolls     Roll[]
+
+  @@unique([gameId, userTgId], name: "gameId_userTgId")
+}
+
+model Roll {
+  id        String   @id @default(cuid())
+  gameId    String
+  playerId  String
+  die       Int
+  result    Int
+  at        DateTime @default(now())
+
+  game      Game     @relation(fields: [gameId], references: [id])
+  player    Player   @relation(fields: [playerId], references: [id])
+}
