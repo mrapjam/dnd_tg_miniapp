@@ -1,4 +1,4 @@
-// server.js — Telegraf webhook + Express + Prisma (Supabase)
+// server.js — Telegraf в webhook-режиме + Express + Prisma (Supabase)
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -7,7 +7,7 @@ import { PrismaClient } from '@prisma/client';
 
 const {
   BOT_TOKEN,
-  BOT_SECRET_PATH = 'telegraf-9f2c1a',
+  BOT_SECRET_PATH = 'telegraf-9f2c1a', // добавь в Render любым рандомом
   APP_URL,
   DATABASE_URL,
   PORT = 3000,
@@ -26,8 +26,10 @@ const bot = new Telegraf(BOT_TOKEN);
 const baseUrl = APP_URL || `http://localhost:${PORT}`;
 const webhookPath = `/telegraf/${BOT_SECRET_PATH}`;
 
+// лог входящих апдейтов (удобно дебажить)
 bot.use((ctx, next) => { console.log('Update:', ctx.updateType); return next(); });
 
+// Команды
 bot.start((ctx) =>
   ctx.reply(
     'DnD Mini App. Выбери действие:',
@@ -37,7 +39,6 @@ bot.start((ctx) =>
 
 bot.command('ping', (ctx) => ctx.reply('pong'));
 
-// создать игру
 bot.command('new', async (ctx) => {
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
   await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
@@ -47,7 +48,6 @@ bot.command('new', async (ctx) => {
   );
 });
 
-// присоединиться к игре (через код)
 bot.command('join', (ctx) => {
   ctx.reply('Введи код комнаты (6 символов):');
   const handler = async (ctx2) => {
@@ -59,7 +59,7 @@ bot.command('join', (ctx) => {
     await prisma.player.upsert({
       where: { gameId_userTgId: { gameId: game.id, userTgId: tgId } },
       create: { gameId: game.id, userTgId: tgId, name: ctx2.from.first_name },
-      update: {},
+      update: {}
     });
 
     await ctx2.reply(
@@ -71,22 +71,22 @@ bot.command('join', (ctx) => {
   bot.on('text', handler);
 });
 
-// быстрые броски из чата
 bot.hears(/^\/roll (d6|d8|d20)$/i, (ctx) => {
   const die = Number(ctx.match[1].slice(1));
   const result = 1 + Math.floor(Math.random() * die);
   return ctx.reply(`🎲 ${ctx.from.first_name} бросил d${die}: *${result}*`, { parse_mode: 'Markdown' });
 });
 
-// ===== ВЕБХУК (ставим ВВЕРХУ и явным POST) =====
+// ===== ВЕБХУК (явный POST + самый верх) =====
 app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
-app.get(webhookPath, (_req, res) => res.status(200).send('ok')); // тест руками
+// GET для ручной проверки
+app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
 
 // ===== Mini‑app (static) + API =====
 app.use(express.static('webapp'));
 app.get('/health', (_req, res) => res.send('ok'));
 
-// API: создать игру (на всякий случай)
+// API: создать игру (на случай, если нужно из вне)
 app.post('/api/games', async (req, res) => {
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
   const { gmTgId } = req.body || {};
@@ -105,20 +105,17 @@ app.post('/api/games/:code/join', async (req, res) => {
   await prisma.player.upsert({
     where: { gameId_userTgId: { gameId: game.id, userTgId: String(tgId) } },
     create: { gameId: game.id, userTgId: String(tgId), name: name || 'Player' },
-    update: {},
+    update: {}
   });
 
   res.json({ ok: true });
 });
 
-// API: получить состояние игры
+// API: состояние игры
 app.get('/api/games/:code', async (req, res) => {
   const game = await prisma.game.findUnique({
     where: { code: req.params.code },
-    include: {
-      players: true,
-      rolls: { orderBy: { at: 'desc' }, take: 50 }
-    }
+    include: { players: true, rolls: { orderBy: { at: 'desc' }, take: 50 } }
   });
   if (!game) return res.status(404).json({ error: 'Game not found' });
 
