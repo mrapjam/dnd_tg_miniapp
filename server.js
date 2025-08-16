@@ -1,154 +1,88 @@
 import express from "express";
 import { Telegraf } from "telegraf";
 import { PrismaClient } from "@prisma/client";
+import dotenv from "dotenv";
 
-const app = express();
+dotenv.config();
 const prisma = new PrismaClient();
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
-if (!BOT_TOKEN) {
-  console.error("❌ Укажи BOT_TOKEN в .env");
-  process.exit(1);
-}
+const app = express();
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
-const bot = new Telegraf(BOT_TOKEN);
-
-// === Утилита: случайный код для игры ===
-function genCode(length = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < length; i++) {
-    out += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return out;
-}
-
-// === Команда: создать новую игру ===
+// --- Команда /new ---
 bot.command("new", async (ctx) => {
-  try {
-    const code = genCode();
+  const tgId = String(ctx.from.id);
+  const code = Math.random().toString(36).substring(2, 7).toUpperCase();
 
-    const game = await prisma.game.create({
-      data: {
-        code,
-        gmId: String(ctx.from.id),
-        title: "Новая игра",
+  const game = await prisma.game.create({
+    data: {
+      code,
+      gmId: tgId,
+      title: "Новая игра",
+      players: {
+        create: {
+          tgId,
+          name: ctx.from.first_name || "GM",
+          isGM: true,
+          hp: 999,
+          gold: 0,
+        },
       },
-    });
-
-    await prisma.player.create({
-      data: {
-        gameId: game.id,
-        tgId: String(ctx.from.id),
-        name: ctx.from.first_name || "GM",
-        isGM: true,
-      },
-    });
-
-    await ctx.reply(
-      `🎲 Игра создана!\nКод: *${code}*\n\nИгроки могут присоединиться командой:\n/join ${code}`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (e) {
-    console.error("DB error on /new", e);
-    await ctx.reply("❌ Ошибка при создании игры");
-  }
-});
-
-// === Команда: присоединиться к игре ===
-bot.command("join", async (ctx) => {
-  const parts = ctx.message.text.split(" ");
-  if (parts.length < 2) {
-    await ctx.reply("⚠️ Используй: /join КОД");
-    return;
-  }
-  const code = parts[1].trim().toUpperCase();
-
-  try {
-    const game = await prisma.game.findUnique({
-      where: { code },
-    });
-
-    if (!game) {
-      await ctx.reply("❌ Игра с таким кодом не найдена");
-      return;
-    }
-
-    const existing = await prisma.player.findFirst({
-      where: { gameId: game.id, tgId: String(ctx.from.id) },
-    });
-    if (existing) {
-      await ctx.reply("⚠️ Ты уже в этой игре");
-      return;
-    }
-
-    await prisma.player.create({
-      data: {
-        gameId: game.id,
-        tgId: String(ctx.from.id),
-        name: ctx.from.first_name || "Игрок",
-      },
-    });
-
-    await ctx.reply(`✅ Ты присоединился к игре *${game.code}*`, {
-      parse_mode: "Markdown",
-    });
-  } catch (e) {
-    console.error("DB error on /join", e);
-    await ctx.reply("❌ Ошибка при присоединении");
-  }
-});
-
-// === Команда: проверить статус ===
-bot.command("start", async (ctx) => {
-  const player = await prisma.player.findFirst({
-    where: { tgId: String(ctx.from.id) },
-    include: { game: true },
+    },
+    include: { players: true },
   });
 
-  if (!player) {
-    await ctx.reply("Ты пока не в игре.\nСоздай новую: /new\nИли присоединись: /join КОД");
-    return;
-  }
-
-  if (player.isGM) {
-    await ctx.reply(`👑 Ты ГМ игры ${player.game.code}`);
-  } else {
-    await ctx.reply(`🙋 Ты игрок в игре ${player.game.code}`);
-  }
+  await ctx.reply(`🎲 Игра создана! Код: ${code}\nТы назначен ГМ.`);
 });
 
-// === Очистка старых игр ===
-async function cleanupExpired() {
-  try {
-    const deleted = await prisma.game.deleteMany({
-      where: {
-        expiresAt: { lt: new Date() },
-      },
-    });
-    if (deleted.count > 0) {
-      console.log(`🧹 Удалено игр: ${deleted.count}`);
-    }
-  } catch (e) {
-    console.error("cleanupExpired error:", e);
+// --- Команда /join <code> ---
+bot.command("join", async (ctx) => {
+  const args = ctx.message.text.split(" ");
+  if (args.length < 2) {
+    return ctx.reply("❌ Используй: /join <код_игры>");
   }
-}
-setInterval(cleanupExpired, 60 * 60 * 1000); // раз в час
 
-// === Express + Webhook для Render ===
+  const code = args[1].toUpperCase();
+  const game = await prisma.game.findUnique({ where: { code } });
+
+  if (!game) return ctx.reply("❌ Игра с таким кодом не найдена");
+
+  const tgId = String(ctx.from.id);
+  const existing = await prisma.player.findFirst({
+    where: { gameId: game.id, tgId },
+  });
+
+  if (existing) {
+    return ctx.reply("⚠️ Ты уже в этой игре!");
+  }
+
+  await prisma.player.create({
+    data: {
+      gameId: game.id,
+      tgId,
+      name: ctx.from.first_name || "Игрок",
+      isGM: false,
+    },
+  });
+
+  await ctx.reply(`✅ Ты присоединился к игре ${game.code}`);
+});
+
+// --- Проверка ---
+bot.command("whoami", async (ctx) => {
+  const tgId = String(ctx.from.id);
+  const player = await prisma.player.findFirst({ where: { tgId } });
+  if (!player) return ctx.reply("Ты пока не в игре");
+  ctx.reply(`Ты ${player.isGM ? "🎩 ГМ" : "🧙 Игрок"} — ${player.name}`);
+});
+
+// --- Express для вебхука ---
 app.use(express.json());
-app.use(bot.webhookCallback(`/telegraf/${BOT_TOKEN}`));
+app.use(bot.webhookCallback(`/telegraf/${bot.secretPathSegment}`));
 
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, async () => {
-  console.log(`🌐 Web server on ${PORT}`);
-  try {
-    await bot.telegram.setWebhook(
-      `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/telegraf/${BOT_TOKEN}`
-    );
-    console.log("🔗 Webhook set");
-  } catch (err) {
-    console.error("Webhook error:", err);
-  }
+  await bot.telegram.setWebhook(`${process.env.RENDER_EXTERNAL_URL}/telegraf/${bot.secretPathSegment}`);
+  console.log(`🌍 Server started on ${PORT}`);
 });
