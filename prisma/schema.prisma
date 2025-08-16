@@ -1,3 +1,4 @@
+// prisma/schema.prisma
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,86 +9,67 @@ datasource db {
 }
 
 model Game {
-  id                Int        @id @default(autoincrement())
-  code              String     @unique
-  gmTgId            String
-  status            String     @default("lobby") // lobby | started
-  currentLocation   Location?  @relation(fields: [currentLocationId], references: [id])
-  currentLocationId Int?
-
-  createdAt         DateTime   @default(now())
-  players           Player[]
-  messages          Message[]
-  locations         Location[]
-  items             Item[]
-  rolls             Roll[]
+  id               String     @id @default(cuid())
+  code             String     @unique
+  ownerTgId        String     // tgId мастера
+  started          Boolean    @default(false)
+  currentLocation  Location?  @relation("CurrentLocation", fields: [currentLocationId], references: [id])
+  currentLocationId String?
+  createdAt        DateTime   @default(now())
+  players          Player[]
+  items            Item[]
+  locations        Location[]
+  messages         Message[]
 }
 
 model Player {
-  id        Int      @id @default(autoincrement())
-  game      Game     @relation(fields: [gameId], references: [id])
-  gameId    Int
-  userTgId  String
+  id        String   @id @default(cuid())
+  tgId      String   // уникальный tgId
   name      String
+  avatar    String?  // url или ключ иконки
+  role      String   // "gm" | "player"
   hp        Int      @default(10)
   gold      Int      @default(0)
-  skills    Json     @default("[]")
-  photo     String?  // dataURL или ссылка
-  note      String?  // описание персонажа (заполняет ГМ)
-
-  createdAt DateTime @default(now())
-
-  items     Item[]
-  rolls     Roll[]
-
-  @@unique([gameId, userTgId])
-}
-
-model Message {
-  id        Int      @id @default(autoincrement())
+  desc      String   @default("")
   game      Game     @relation(fields: [gameId], references: [id])
-  gameId    Int
-  userTgId  String
-  name      String
-  text      String
-  at        DateTime @default(now())
-}
-
-model Location {
-  id          Int      @id @default(autoincrement())
-  game        Game     @relation(fields: [gameId], references: [id])
-  gameId      Int
-  title       String
-  description String   @default("")
-  image       String?  // dataURL или ссылка
-  createdAt   DateTime @default(now())
-
-  items       Item[]
-  gamesWhereCurrent Game[]
+  gameId    String
+  items     Item[]   @relation("OwnerItems")
+  createdAt DateTime @default(now())
 }
 
 model Item {
-  id             Int      @id @default(autoincrement())
-  game           Game     @relation(fields: [gameId], references: [id])
-  gameId         Int
-  owner          Player?  @relation(fields: [ownerPlayerId], references: [id])
-  ownerPlayerId  Int?
-  name           String
-  qty            Int      @default(1)
-  note           String   @default("")
-  type           String   @default("misc")
-  location       Location? @relation(fields: [locationId], references: [id])
-  locationId     Int?
-  createdAt      DateTime @default(now())
+  id         String   @id @default(cuid())
+  title      String
+  kind       String   @default("item") // "item"|"gold"
+  amount     Int      @default(1)      // для gold
+  onFloor    Boolean  @default(false)
+  revealed   Boolean  @default(false)  // появляется игроку по «Осмотреться»
+  game       Game     @relation(fields: [gameId], references: [id])
+  gameId     String
+  owner      Player?  @relation("OwnerItems", fields: [ownerId], references: [id])
+  ownerId    String?
+  createdAt  DateTime @default(now())
 }
 
-model Roll {
-  id        Int      @id @default(autoincrement())
+model Location {
+  id        String   @id @default(cuid())
+  title     String
+  descr     String   @default("")
+  imageUrl  String?  // загружаемая картинка
   game      Game     @relation(fields: [gameId], references: [id])
-  gameId    Int
-  player    Player   @relation(fields: [playerId], references: [id])
-  playerId  Int
-  die       Int
-  result    Int
-  at        DateTime @default(now())
+  gameId    String
+  createdAt DateTime @default(now())
+
+  // обратная связь для currentLocation
+  Game      Game[]   @relation("CurrentLocation")
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  game      Game     @relation(fields: [gameId], references: [id])
+  gameId    String
+  authorId  String
+  author    String
+  text      String
+  createdAt DateTime @default(now())
 }
