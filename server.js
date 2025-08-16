@@ -1,4 +1,4 @@
-// server.js
+// server.js — минимально-рабочий Telegraf + Express с корректным вебхуком и логами
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -6,94 +6,93 @@ import { Telegraf, Markup } from "telegraf";
 
 dotenv.config();
 
-// ====== ENV ======
+// ─── ENV ─────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 10000;
-// Пример: https://dnd-tg-miniapp.onrender.com
+
+// ВАЖНО: без завершающего слэша
 const APP_URL = (process.env.APP_URL || "").replace(/\/+$/, "");
-// Пример: /telegraf/telegraf-9f2c1a
-const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || `/telegraf/telegraf-${Math.random().toString(16).slice(2, 8)}`;
-const BOT_TOKEN = process.env.BOT_TOKEN;
-
-if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN is not set in environment");
-  process.exit(1);
-}
 if (!APP_URL) {
-  console.error("❌ APP_URL is not set in environment (e.g. https://<your>.onrender.com)");
+  console.error("❌ APP_URL is not set. Example: https://dnd-tg-miniapp.onrender.com");
   process.exit(1);
 }
 
+const BOT_TOKEN = process.env.BOT_TOKEN;
+if (!BOT_TOKEN) {
+  console.error("❌ BOT_TOKEN is not set");
+  process.exit(1);
+}
+
+// Секретный путь вебхука. Если в ENV задан, используем его.
+// ГАРАНТИРУЕМ ведущий слэш и формат /telegraf/<что-то>
+let BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || "telegraf-9f2c1a";
+if (!BOT_SECRET_PATH.startsWith("/")) BOT_SECRET_PATH = "/" + BOT_SECRET_PATH;
+if (!BOT_SECRET_PATH.startsWith("/telegraf/")) BOT_SECRET_PATH = "/telegraf" + (BOT_SECRET_PATH === "/" ? "" : BOT_SECRET_PATH);
+const WEBHOOK_PATH = BOT_SECRET_PATH;
+const WEBHOOK_URL = `${APP_URL}${WEBHOOK_PATH}`;
+
+console.log("ENV check:", { APP_URL, WEBHOOK_PATH, WEBHOOK_URL });
+
+// ─── EXPRESS ────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
-app.use(express.json()); // Telegram шлёт JSON
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ====== BOT ======
+// корень и health
+app.get("/", (req, res) => res.status(200).send("OK"));
+app.get("/healthz", (req, res) => res.json({ ok: true, appUrl: APP_URL, webhook: WEBHOOK_PATH }));
+
+// ЛОГ ВСЕХ ЗАПРОСОВ на вебхук (для отладки 404)
+app.all(WEBHOOK_PATH, (req, res, next) => {
+  console.log(`📬 HTTP ${req.method} ${req.originalUrl}  UA=${req.headers["user-agent"] || ""}`);
+  next();
+});
+
+// ─── BOT ────────────────────────────────────────────────────────
 const bot = new Telegraf(BOT_TOKEN);
 
-// Логируем все апдейты, чтобы понять — вообще приходят или нет
+// Логируем каждый апдейт от Telegram (если он вообще доходит)
 bot.use(async (ctx, next) => {
   try {
     const u = ctx.update;
-    console.log("➡️  Update:", JSON.stringify({
+    console.log("➡️  Update:", {
       type: u.message ? "message" :
             u.callback_query ? "callback_query" :
-            u.my_chat_member ? "my_chat_member" : "other",
-      chat: u.message?.chat?.id || u.callback_query?.message?.chat?.id,
-      text: u.message?.text
-    }));
-  } catch (e) {}
+            u.my_chat_member ? "my_chat_member" : Object.keys(u)[0],
+      chat: u.message?.chat?.id || u.callback_query?.message?.chat?.id || null,
+      text: u.message?.text || null
+    });
+  } catch {}
   return next();
 });
 
-// Команды
+// /start
 bot.start(async (ctx) => {
   await ctx.reply(
-    "Dnd Mini App. Выбери действие:",
-    Markup.inlineKeyboard([
-      [Markup.button.webApp("Открыть мини‑апп", `${APP_URL}/`)]
-    ])
+    "Dnd Mini App. Нажми, чтобы открыть мини‑апп:",
+    Markup.inlineKeyboard([Markup.button.webApp("Открыть", `${APP_URL}/`)])
   );
 });
 
+// /new — тестовая реакция
 bot.command("new", async (ctx) => {
-  try {
-    await ctx.reply("Команда /new получена. (тестовый ответ)");
-    // здесь потом вставим логику создания игры
-  } catch (e) {
-    console.error("ERROR in /new:", e);
-  }
+  await ctx.reply("Команда /new получена ✅");
 });
 
-// ====== WEBHOOK ======
-// Подвешиваем обработчик вебхука на Express
-app.use(bot.webhookCallback(BOT_SECRET_PATH));
+// ПОДКЛЮЧАЕМ ХЭНДЛЕР ВЕБХУКА ИМЕННО НА ЭТОТ ПУТЬ
+app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
 
-// Для наглядности: покажем где нас слушает вебхук
-app.get("/healthz", (req, res) => {
-  res.json({
-    ok: true,
-    webhookPath: BOT_SECRET_PATH,
-    appUrl: APP_URL,
-  });
-});
-
-// Любой корневой GET (для веб‑миниаппа подставь свою раздачу статики)
-// Временно просто ответ 200, чтобы Render не ругался
-app.get("/", (req, res) => {
-  res.status(200).send("OK");
-});
-
-// Стартуем HTTP и настраиваем вебхук
+// ─── START + setWebhook ─────────────────────────────────────────
 app.listen(PORT, async () => {
   console.log(`🌐 Web server on ${PORT}`);
-  const url = `${APP_URL}${BOT_SECRET_PATH}`;
   try {
-    // Сбрасываем старый вебхук (на всякий случай)
-    await bot.telegram.deleteWebhook();
-    // Ставим новый точный URL
-    await bot.telegram.setWebhook(url);
+    // снимаем старый вебхук и дропаем накопившиеся апдейты
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+    // ставим новый ровно на WEBHOOK_URL
+    await bot.telegram.setWebhook(WEBHOOK_URL);
     const info = await bot.telegram.getWebhookInfo();
-    console.log("🔗 Webhook set to:", info.url || url);
+    console.log("🔗 getWebhookInfo:", info);
+    console.log("✅ Expecting POST to:", WEBHOOK_URL);
   } catch (e) {
     console.error("❌ setWebhook error:", e);
   }
