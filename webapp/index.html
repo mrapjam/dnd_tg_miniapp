@@ -162,8 +162,8 @@
       const body = { code, me, playerId, delta };
       const url = field === 'gold' ? '/api/gm/grant-gold' : '/api/gm/grant-hp';
       const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-      const data = await r.json();
-      if (!data.ok) { alert('Не удалось применить действие'); return; }
+      const resp = await r.json();
+      if (!resp.ok) { alert('Не удалось применить действие'); return; }
       await loadState();
     });
 
