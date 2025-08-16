@@ -1,4 +1,4 @@
-// server.js — webhook-режим для Telegraf + мини‑апп
+// server.js — Telegraf в webhook-режиме + простая мини‑аппа
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -6,14 +6,13 @@ import { Telegraf, Markup } from 'telegraf';
 
 const {
   BOT_TOKEN,
-  BOT_SECRET_PATH = 'telegraf-secret',   // добавь в Render переменную с рандомом
-  PORT = 3000,
+  BOT_SECRET_PATH = 'telegraf-9f2c1a', // добавь переменную в Render (любой рандом)
   APP_URL,
+  PORT = 3000,
 } = process.env;
 
 if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is required');
-  process.exit(1);
+  console.error('❌ BOT_TOKEN is required'); process.exit(1);
 }
 
 const app = express();
@@ -23,18 +22,23 @@ app.use(bodyParser.json());
 // ===== In-memory storage (MVP) =====
 const games = new Map(); // code -> { gmTgId, players: Map, rolls: [] }
 
-// ===== Bot (webhook) =====
+// ===== Bot =====
 const bot = new Telegraf(BOT_TOKEN);
 const baseUrl = APP_URL || `http://localhost:${PORT}`;
 const webhookPath = `/telegraf/${BOT_SECRET_PATH}`;
 
+// (необязательно, но удобно видеть входящие апдейты в логах)
+bot.use((ctx, next) => { console.log('Update:', ctx.updateType); return next(); });
+
 // Команды
-bot.start((ctx) => {
-  return ctx.reply(
+bot.start((ctx) =>
+  ctx.reply(
     'DnD Mini App. Выбери действие:',
     Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑апп', `${baseUrl}/`)]])
-  );
-});
+  )
+);
+
+bot.command('ping', (ctx) => ctx.reply('pong'));
 
 bot.command('new', (ctx) => {
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -50,16 +54,18 @@ bot.command('join', (ctx) => {
   const handler = async (ctx2) => {
     const code = (ctx2.message.text || '').trim().toUpperCase();
     const game = games.get(code);
-    if (!game) {
-      await ctx2.reply('Игры с таким кодом нет. Проверь код.');
-      return;
-    }
+    if (!game) return ctx2.reply('Игры с таким кодом нет. Проверь код.');
+
     const tgId = String(ctx2.from.id);
     if (!game.players.has(tgId)) {
-      game.players.set(tgId, { hp: 10, gold: 0, skills: [], photo: null, name: ctx2.from.first_name });
+      game.players.set(tgId, {
+        hp: 10, gold: 0, skills: [], photo: null, name: ctx2.from.first_name,
+      });
     }
-    await ctx2.reply('Заходим!', Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]]));
-    bot.off('text', handler);
+    await ctx2.reply('Заходим!',
+      Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]])
+    );
+    bot.off('text', handler); // одноразовый
   };
   bot.on('text', handler);
 });
@@ -70,9 +76,14 @@ bot.hears(/^\/roll (d6|d8|d20)$/i, (ctx) => {
   return ctx.reply(`🎲 ${ctx.from.first_name} бросил d${die}: *${result}*`, { parse_mode: 'Markdown' });
 });
 
+// ===== ВЕБХУК СТАВИМ ВЕРХОМ И ЯВНО POST! =====
+app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
+// Для ручной проверки браузером (GET)
+app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
+
 // ===== Mini‑app (static) + API =====
 app.use(express.static('webapp'));
-app.get('/health', (_, res) => res.send('ok'));
+app.get('/health', (_req, res) => res.send('ok'));
 
 app.post('/api/games', (req, res) => {
   const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -110,14 +121,10 @@ app.post('/api/games/:code/roll', (req, res) => {
   res.json(roll);
 });
 
-// ===== Поднимаем веб‑сервер и настраиваем вебхук =====
-app.use(webhookPath, bot.webhookCallback(webhookPath));
-
+// ===== Запуск и установка вебхука =====
 const server = app.listen(PORT, async () => {
   console.log('🌐 Web server on', PORT);
-
   try {
-    // чистим старые режимы и ставим новый вебхук
     await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
     await bot.telegram.setWebhook(`${baseUrl}${webhookPath}`);
     console.log('🔗 Webhook set:', `${baseUrl}${webhookPath}`);
