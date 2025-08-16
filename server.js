@@ -1,4 +1,4 @@
-// server.js — Telegraf (webhook) + Express + Prisma (Supabase) + GM панель + инвентарь
+// Telegraf (webhook) + Express + Prisma. GM-панель, инвентарь с типами.
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -21,15 +21,13 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// ===== Telegram Bot (webhook) =====
+// ===== Telegram Bot =====
 const bot = new Telegraf(BOT_TOKEN);
 const baseUrl = APP_URL || `http://localhost:${PORT}`;
 const webhookPath = `/telegraf/${BOT_SECRET_PATH}`;
 
-// логи апдейтов (удобно дебажить)
 bot.use((ctx, next) => { console.log('Update:', ctx.updateType); return next(); });
 
-// Команды
 bot.start((ctx) =>
   ctx.reply(
     'DnD Mini App. Выбери действие:',
@@ -39,9 +37,9 @@ bot.start((ctx) =>
 
 bot.command('ping', (ctx) => ctx.reply('pong'));
 
+// /new — создаёт игру. По договорённости — делает это мастер.
 bot.command(['new', 'startgame'], async (ctx) => {
   try {
-    console.log('CMD /new from', ctx.from?.id);
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
     await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
     await ctx.reply(
@@ -50,50 +48,65 @@ bot.command(['new', 'startgame'], async (ctx) => {
     );
   } catch (e) {
     console.error('ERROR /new:', e);
-    await ctx.reply('Не удалось создать игру. Проверь подключение к базе и попробуй ещё раз.');
+    await ctx.reply('Не удалось создать игру. Проверь подключение к базе и попробуй снова.');
   }
 });
 
+// /join — 2 шага: код → имя
 bot.command('join', (ctx) => {
   ctx.reply('Введи код комнаты (6 символов):');
-  const handler = async (ctx2) => {
+  const askCode = async (ctx2) => {
     const code = (ctx2.message.text || '').trim().toUpperCase();
     const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) { await ctx2.reply('Игры с таким кодом нет.'); return; }
+    if (!game) { await ctx2.reply('Игры с таким кодом нет. Введи код ещё раз:'); return; }
 
-    const tgId = String(ctx2.from.id);
-    await prisma.player.upsert({
-      where: { gameId_userTgId: { gameId: game.id, userTgId: tgId } },
-      create: { gameId: game.id, userTgId: tgId, name: ctx2.from.first_name },
-      update: {}
-    });
+    await ctx2.reply('Отлично! Введи имя персонажа (как тебя будут видеть):');
 
-    await ctx2.reply(
-      'Заходим!',
-      Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]])
-    );
-    bot.off('text', handler);
+    const askName = async (ctx3) => {
+      const name = (ctx3.message.text || '').trim().slice(0, 40) || ctx3.from.first_name;
+      const tgId = String(ctx3.from.id);
+
+      await prisma.player.upsert({
+        where: { gameId_userTgId: { gameId: game.id, userTgId: tgId } },
+        create: { gameId: game.id, userTgId: tgId, name },
+        update: { name }
+      });
+
+      await ctx3.reply(
+        `Готово, ${name}!`,
+        Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]])
+      );
+      bot.off('text', askName);
+    };
+
+    bot.off('text', askCode);
+    bot.on('text', askName);
   };
-  bot.on('text', handler);
+  bot.on('text', askCode);
 });
 
+// Быстрые броски из чата
 bot.hears(/^\/roll (d6|d8|d20)$/i, (ctx) => {
   const die = Number(ctx.match[1].slice(1));
   const result = 1 + Math.floor(Math.random() * die);
   return ctx.reply(`🎲 ${ctx.from.first_name} бросил d${die}: *${result}*`, { parse_mode: 'Markdown' });
 });
 
-// ===== Webhook (явный POST) =====
+// ===== Webhook маршруты (до остальных) =====
 app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
 app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
 
 // ===== Static + health =====
 app.use(express.static('webapp'));
 app.get('/health', (_req, res) => res.send('ok'));
+app.get('/db-check', async (_req, res) => {
+  try { await prisma.$queryRaw`select 1 as ok`; res.send('db: ok'); }
+  catch(e){ console.error(e); res.status(500).send('db: fail'); }
+});
 
 // ===== API: игры/игроки/броски =====
 
-// Создать игру из мини‑аппы (кнопка GM)
+// Создать игру из мини‑аппы (показывается только без кода/для ГМа)
 app.post('/api/games', async (req, res) => {
   try {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -117,13 +130,13 @@ app.post('/api/games/:code/join', async (req, res) => {
   await prisma.player.upsert({
     where: { gameId_userTgId: { gameId: game.id, userTgId: String(tgId) } },
     create: { gameId: game.id, userTgId: String(tgId), name: name || 'Player' },
-    update: {}
+    update: name ? { name } : {}
   });
 
   res.json({ ok: true });
 });
 
-// Информация об игре (плюс isGM)
+// Информация об игре (+ isGM)
 app.get('/api/games/:code', async (req, res) => {
   const game = await prisma.game.findUnique({
     where: { code: req.params.code },
@@ -145,7 +158,7 @@ app.get('/api/games/:code', async (req, res) => {
   });
 });
 
-// Обновить игрока (GM‑панель): hp/gold/name
+// Патч игрока (имя/HP/Gold) — используется в GM‑панели и при вводе имени
 app.patch('/api/games/:code/players/:tgId', async (req, res) => {
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
   if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -153,7 +166,7 @@ app.patch('/api/games/:code/players/:tgId', async (req, res) => {
   const { name, hp, gold } = req.body || {};
   const data = {};
   if (name !== undefined) data.name = String(name);
-  if (hp !== undefined)   data.hp   = Number(hp);
+  if (hp   !== undefined) data.hp   = Number(hp);
   if (gold !== undefined) data.gold = Number(gold);
 
   const player = await prisma.player.update({
@@ -186,10 +199,9 @@ app.post('/api/games/:code/roll', async (req, res) => {
   res.json({ tgId: player.userTgId, die: roll.die, result: roll.result, at: roll.at });
 });
 
-// ===== API: Инвентарь =====
+// ===== API: Инвентарь (через raw SQL; колонка "type" добавлена SQL-скриптом) =====
 
-// Список предметов игры.
-// Опционально ?ownerTgId=... — вернуть предметы только этого игрока.
+// Список предметов игры. ?ownerTgId=... — только этого игрока.
 app.get('/api/games/:code/items', async (req, res) => {
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
   if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -198,7 +210,7 @@ app.get('/api/games/:code/items', async (req, res) => {
 
   if (ownerTgId) {
     const items = await prisma.$queryRaw`
-      select i.id, i.name, i.qty, i.note, i."ownerPlayerId",
+      select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId",
              p."userTgId" as "ownerTgId", p.name as "ownerName"
       from "Item" i
       join "Player" p on p.id = i."ownerPlayerId"
@@ -209,7 +221,7 @@ app.get('/api/games/:code/items', async (req, res) => {
   }
 
   const items = await prisma.$queryRaw`
-    select i.id, i.name, i.qty, i.note, i."ownerPlayerId",
+    select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId",
            p."userTgId" as "ownerTgId", p.name as "ownerName"
     from "Item" i
     left join "Player" p on p.id = i."ownerPlayerId"
@@ -219,9 +231,9 @@ app.get('/api/games/:code/items', async (req, res) => {
   res.json(items);
 });
 
-// Добавить предмет (GM): можно сразу назначить ownerTgId, либо оставить на полу
+// Добавить/выдать предмет (GM)
 app.post('/api/games/:code/items', async (req, res) => {
-  const { name, qty = 1, note = '', ownerTgId = null } = req.body || {};
+  const { name, qty = 1, note = '', type = 'misc', ownerTgId = null } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
 
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
@@ -236,13 +248,13 @@ app.post('/api/games/:code/items', async (req, res) => {
   }
 
   await prisma.$executeRaw`
-    insert into "Item" ("gameId","ownerPlayerId","name","qty","note")
-    values (${game.id}, ${ownerPlayerId}, ${name}, ${Number(qty) || 1}, ${note})
+    insert into "Item" ("gameId","ownerPlayerId","name","qty","note","type")
+    values (${game.id}, ${ownerPlayerId}, ${name}, ${Number(qty)||1}, ${note}, ${type})
   `;
   res.json({ ok: true });
 });
 
-// Передать предмет другому игроку (или уронить на пол)
+// Передать предмет (или уронить на пол)
 app.post('/api/games/:code/items/:itemId/transfer', async (req, res) => {
   const { toTgId = null } = req.body || {};
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
