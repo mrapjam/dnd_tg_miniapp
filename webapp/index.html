@@ -109,14 +109,16 @@
       if (data.code) location.href = `/?code=${data.code}`; else alert('Не удалось создать игру');
     };
 
+    // === JOIN c мгновенной подгрузкой состояния ===
     async function ensureJoin() {
       if (!code) return;
-      // имя, если уже введено в поле
       const nameDraft = document.getElementById('playerName').value.trim();
       await api(`/api/games/${code}/join`, {
         method:'POST',
         body: JSON.stringify({ tgId: String(user.id), name: nameDraft || user.first_name })
       });
+      // Сразу тянем состояние игры (подхватит имя из БД)
+      await loadGame();
     }
 
     async function loadGame() {
@@ -125,7 +127,7 @@
       if (!r.ok) return;
       const data = await r.json();
 
-      // кнопку "Создать игру" показываем только если нет кода или ты ГМ
+      // кнопку «Создать игру» — только для ГМа или если нет кода
       document.getElementById('createGame').style.display = (data.isGM || !code) ? 'inline-block' : 'none';
 
       // имя игрока
@@ -221,7 +223,7 @@
       };
     });
 
-    // инвентарь
+    // инвентарь (общий)
     async function loadInventory() {
       if (!code) { document.getElementById('inventory').innerHTML = ''; return; }
       const r = await api(`/api/games/${code}/items`);
@@ -277,6 +279,7 @@
       });
     }
 
+    // мой инвентарь
     async function loadMyInventory() {
       if (!code) { document.getElementById('myInv').innerHTML = ''; return; }
       const r = await api(`/api/games/${code}/items?ownerTgId=${encodeURIComponent(String(user.id))}`);
@@ -351,7 +354,8 @@
       }, 3000);
     }
 
-    ensureJoin().then(() => { loadGame().then(startPolling); });
+    // ИНИЦИАЛИЗАЦИЯ: join -> сразу подгружаем игру -> запускаем поллинг
+    ensureJoin().then(startPolling);
     try { tg && tg.expand(); } catch(e){}
   </script>
 </body>
