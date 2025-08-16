@@ -1,4 +1,5 @@
 // prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -8,81 +9,121 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum Role {
+  GM
+  PLAYER
+}
+
 model Game {
-  id         String   @id @default(cuid())
-  code       String   @unique
-  gmId       String   // Telegram ID мастера (строкой, чтобы не ловить bigint)
-  started    Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  title     String?
+  gmId      String                      // Telegram ID мастера (как строка)
+  started   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  /// Срок жизни игры (для авто‑очистки). 6 часов по умолчанию
+  expiresAt DateTime @default(dbgenerated("now() + interval '6 hours'")) @db.Timestamptz(6)
 
-  // текущая локация (опционально)
-  currentLocationId String? 
-  currentLocation   Location? @relation("CurrentLocation", fields: [currentLocationId], references: [id])
+  // Текущая "глобальная" локация (опционально)
+  currentLocationId String?
+  currentLocation   Location? @relation("GameCurrentLocation", fields: [currentLocationId], references: [id])
 
+  // Связи
   players   Player[]
+  locations Location[]
   items     Item[]
   messages  Message[]
-  locations Location[]
 
   @@index([expiresAt])
+  @@index([code])
 }
 
 model Player {
-  id        String   @id @default(cuid())
-  tgId      String   // Telegram user id
+  id        String   @id @default(uuid()) @db.Uuid
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  tgId      String                       // Telegram user id (как строка)
   name      String
-  avatar    String?  // эмодзи/иконка/URL
-  hp        Int      @default(10)
-  gold      Int      @default(0)
-  isGM      Boolean  @default(false)
+  avatar    String?                      // ключ/URL аватарки
+  role      Role      @default(PLAYER)
 
-  gameId String
-  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  hp        Int       @default(10)
+  gold      Int       @default(0)
 
-  items   Item[]
-  messages Message[]
+  // Текущая локация игрока (опционально)
+  currentLocationId String?  @db.Uuid
+  currentLocation   Location? @relation("PlayerCurrentLocation", fields: [currentLocationId], references: [id])
 
-  @@index([gameId, tgId])
-}
-
-model Item {
-  id        String   @id @default(cuid())
-  name      String
-  // Если playerId = null → предмет "на полу"
-  playerId  String?
-  player    Player? @relation(fields: [playerId], references: [id], onDelete: SetNull)
-
-  gameId String
-  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  items     Item[]
+  messages  Message[]
 
   createdAt DateTime @default(now())
 
-  @@index([gameId, createdAt])
-}
-
-model Message {
-  id        String   @id @default(cuid())
-  text      String
-  createdAt DateTime @default(now())
-
-  gameId String
-  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
-
-  authorId String?
-  author   Player? @relation(fields: [authorId], references: [id], onDelete: SetNull)
-
-  @@index([gameId, createdAt])
+  @@index([gameId])
+  @@index([tgId, gameId], map: "player_tg_in_game")
 }
 
 model Location {
-  id          String   @id @default(cuid())
-  name        String
-  description String   @default("")
-  imageUrl    String?  // можно сохранить URL картинки локации
+  id        String   @id @default(uuid()) @db.Uuid
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
-  gameId String
-  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  name      String
+  descr     String?
+  imageUrl  String?
+
+  createdAt DateTime @default(now())
+
+  // Предметы, лежащие в этой локации
+  items     Item[]   @relation("LocationItems")
+
+  // Игроки, для которых эта локация текущая
+  playersHere Player[] @relation("PlayerCurrentLocation")
+
+  // Обратный конец связи "текущая локация игры"
+  gamesAsCurrentLocation Game[] @relation("GameCurrentLocation")
 
   @@index([gameId])
+  @@unique([gameId, name], map: "unique_location_per_game")
+}
+
+model Item {
+  id        String   @id @default(uuid()) @db.Uuid
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  name      String
+  descr     String?
+
+  // Владелец (если предмет у игрока)
+  ownerId   String?  @db.Uuid
+  owner     Player?  @relation("PlayerItems", fields: [ownerId], references: [id])
+
+  // Локация (если предмет на полу)
+  locationId String?  @db.Uuid
+  location   Location? @relation("LocationItems", fields: [locationId], references: [id])
+
+  goldAmount Int?     // если это "мешочек золота" вместо обычного предмета
+
+  createdAt DateTime @default(now())
+
+  @@index([gameId])
+  @@index([ownerId])
+  @@index([locationId])
+}
+
+model Message {
+  id        String   @id @default(uuid()) @db.Uuid
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  // Автор сообщения (может быть null — системное / от ГМа)
+  authorId  String?  @db.Uuid
+  author    Player?  @relation(fields: [authorId], references: [id])
+
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([gameId, createdAt])
 }
