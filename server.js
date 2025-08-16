@@ -1,378 +1,385 @@
+// server.js
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import bodyParser from 'body-parser';
+import multer from 'multer';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { Telegraf, Markup } from 'telegraf';
 import { PrismaClient } from '@prisma/client';
 
-const {
-  BOT_TOKEN,
-  BOT_SECRET_PATH = 'telegraf-9f2c1a',
-  APP_URL,
-  DATABASE_URL,
-  PORT = 3000,
-} = process.env;
-
-if (!BOT_TOKEN) console.error('❌ BOT_TOKEN is required');
-if (!DATABASE_URL) console.error('❌ DATABASE_URL is required');
-
 const prisma = new PrismaClient();
 const app = express();
-app.use(cors({ maxAge: 60 }));
-app.use(bodyParser.json({ limit: '8mb' })); // для dataURL фото
+app.use(cors());
+app.use(express.json({ limit: '2mb' }));
 
-// --- BOT -------------------------------------------------
-const bot = new Telegraf(BOT_TOKEN);
-const baseUrl = (APP_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
-const webhookPath = `/telegraf/${BOT_SECRET_PATH}`;
+// -------- static & uploads
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const upload = multer({ dest: path.join(__dirname, 'uploads') });
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/', express.static(path.join(__dirname, 'public')));
 
-const pendingJoin = new Map();
-const genCode = () => Math.random().toString(36).slice(2, 8).toUpperCase();
-const appUrl = (code, ctx) => {
-  const q = new URLSearchParams();
-  if (code) q.set('code', code);
-  if (ctx?.from?.id) q.set('tgId', String(ctx.from.id));
-  if (ctx?.from?.first_name) q.set('name', ctx.from.first_name);
-  return `${baseUrl}/?${q.toString()}`;
-};
+// -------- helpers
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || 'telegraf-secret';
+const APP_URL = process.env.APP_URL?.replace(/\/$/, '');
 
-bot.start(ctx =>
-  ctx.reply('DnD Mini App. Выбери действие:',
-    Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑апп', appUrl('', ctx))]])
-  )
-);
+// util: gen 6-digit code
+function code6() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let c = '';
+  for (let i = 0; i < 6; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
 
-bot.command(['new', 'startgame'], async (ctx) => {
+// ---- health/db check
+app.get('/health', (_, res) => res.send('ok'));
+app.get('/db-check', async (_, res) => {
   try {
-    const code = genCode();
-    await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
-    await ctx.reply(
-      `Игра создана. Код: ${code}`,
-      Markup.inlineKeyboard([[Markup.button.webApp('Панель мастера', appUrl(code, ctx))]])
-    );
-  } catch (e) { console.error(e); ctx.reply('Не удалось создать игру.'); }
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ db: 'ok' });
+  } catch (e) {
+    res.status(500).json({ db: 'fail', error: String(e) });
+  }
 });
 
-bot.command('join', (ctx) => {
-  pendingJoin.set(ctx.from.id, true);
-  ctx.reply('Введи код комнаты (6 символов):');
-});
-bot.on('text', async (ctx) => {
-  if (!pendingJoin.get(ctx.from.id)) return;
-  const code = (ctx.message.text || '').trim().toUpperCase();
-  if (!/^[A-Z0-9]{6}$/.test(code)) return ctx.reply('Код должен быть из 6 символов. Попробуй ещё раз:');
-  const game = await prisma.game.findUnique({ where: { code } });
-  if (!game) return ctx.reply('Игра не найдена. Введи другой код:');
-  pendingJoin.delete(ctx.from.id);
-  ctx.reply(
-    `Код принят: ${code}. Открой мини‑аппу, введи имя и зайди в лобби.`,
-    Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑апп', appUrl(code, ctx))]])
-  );
-});
+// ================== API ==================
 
-app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
-app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
-
-// --- STATIC & HEALTH ------------------------------------
-app.use(express.static('webapp'));
-app.get('/health', (_req, res) => res.send('ok'));
-app.get('/db-check', async (_req, res) => {
-  try { await prisma.$queryRaw`select 1`; res.send('db: ok'); }
-  catch { res.status(503).send('db: fail'); }
-});
-
-// --- API -------------------------------------------------
-
-// состояние игры для клиента
-app.get('/api/games/:code', async (req, res) => {
+// state for mini-app
+app.get('/api/state', async (req, res) => {
   try {
-    const code = req.params.code;
-    const tgId = req.query.tgId ? String(req.query.tgId) : null;
-
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
+    const { code, tgId } = req.query;
+    const game = await prisma.game.findUnique({
+      where: { code: String(code) },
+      include: {
+        players: true,
+        items: true,
+        locations: true,
+        currentLocation: true,
+      },
+    });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
 
     const me = tgId
-      ? await prisma.player.findUnique({
-          where: { gameId_userTgId: { gameId: game.id, userTgId: tgId } }
-        })
+      ? await prisma.player.findFirst({ where: { gameId: game.id, tgId: String(tgId) } })
       : null;
 
-    const players = await prisma.player.findMany({
-      where: { gameId: game.id },
-      orderBy: { id: 'asc' },
-      select: { id:true, userTgId:true, name:true, hp:true, gold:true, skills:true, photo:true, note:true }
-    });
-
-    let currentLocation = null;
-    if (game.currentLocationId) {
-      currentLocation = await prisma.location.findUnique({
-        where: { id: game.currentLocationId },
-        select: { id: true, title: true, description: true, image: true }
-      });
-    }
-
-    // броски последних 50
-    const rolls = await prisma.roll.findMany({
-      where: { gameId: game.id },
-      orderBy: { at: 'desc' },
-      take: 50,
-      include: { player: { select: { name: true, userTgId: true } } }
-    });
+    const floorHidden = game.items.filter((i) => i.onFloor && !i.revealed);
+    const floorVisible = game.items.filter((i) => i.onFloor && i.revealed);
 
     res.json({
-      code,
-      status: game.status,
-      isGM: tgId ? game.gmTgId === tgId : false,
-      joined: Boolean(me),
       me,
-      currentLocation,
-      players: players.map(p => ({ tgId: p.userTgId, ...p })),
-      rolls: rolls.map(r => ({ die: r.die, result: r.result, at: r.at, name: r.player.name, tgId: r.player.userTgId }))
+      game: {
+        code: game.code,
+        started: game.started,
+        currentLocation: game.currentLocation
+          ? {
+              id: game.currentLocation.id,
+              title: game.currentLocation.title,
+              descr: game.currentLocation.descr,
+              imageUrl: game.currentLocation.imageUrl || null,
+            }
+          : null,
+      },
+      players: game.players.map((p) => ({
+        id: p.id,
+        tgId: p.tgId,
+        name: p.name,
+        avatar: p.avatar,
+        role: p.role,
+        hp: p.hp,
+        gold: p.gold,
+        desc: p.desc,
+      })),
+      myInventory: me ? await prisma.item.findMany({ where: { ownerId: me.id } }) : [],
+      floorVisible, // видно всем
+      floorHiddenCount: floorHidden.length, // для кнопки «Осмотреться»
     });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+  } catch (e) {
+    console.error('state error', e);
+    res.status(500).json({ error: 'STATE_FAIL' });
+  }
 });
 
-// вход в лобби (имя + аватар)
-app.post('/api/games/:code/join', async (req, res) => {
+// join lobby: set name + avatar
+app.post('/api/join-lobby', async (req, res) => {
   try {
-    const code = req.params.code;
-    const { tgId, name, photo } = req.body || {};
-    if (!tgId) return res.status(400).json({ error: 'tgId required' });
-
+    const { code, tgId, name, avatar } = req.body;
     const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
 
-    await prisma.player.upsert({
-      where: { gameId_userTgId: { gameId: game.id, userTgId: String(tgId) } },
-      create: { gameId: game.id, userTgId: String(tgId), name: name || 'Hero', photo: photo || null },
-      update: { name: name || undefined, photo: photo === undefined ? undefined : photo }
-    });
-
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    let pl = await prisma.player.findFirst({ where: { gameId: game.id, tgId } });
+    if (pl) {
+      pl = await prisma.player.update({
+        where: { id: pl.id },
+        data: { name, avatar },
+      });
+    } else {
+      pl = await prisma.player.create({
+        data: { name, avatar, role: tgId === game.ownerTgId ? 'gm' : 'player', tgId, gameId: game.id },
+      });
+    }
+    res.json({ ok: true, player: pl });
+  } catch (e) {
+    console.error('join-lobby', e);
+    res.status(500).json({ error: 'JOIN_FAIL' });
+  }
 });
 
-// чат
-app.get('/api/games/:code/messages', async (req, res) => {
+// chat: list
+app.get('/api/chat', async (req, res) => {
   try {
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
+    const { code, limit = 50 } = req.query;
+    const game = await prisma.game.findUnique({ where: { code: String(code) } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+
     const msgs = await prisma.message.findMany({
       where: { gameId: game.id },
-      orderBy: { at: 'desc' },
-      take: 50
+      orderBy: { createdAt: 'asc' },
+      take: Number(limit),
     });
-    res.json(msgs.reverse());
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-app.post('/api/games/:code/messages', async (req, res) => {
-  try {
-    const { tgId, name, text } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    await prisma.message.create({ data: { gameId: game.id, userTgId: String(tgId||'0'), name: name || 'Hero', text } });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    res.json(msgs);
+  } catch (e) {
+    console.error('chat list', e);
+    res.status(500).json({ error: 'CHAT_LIST_FAIL' });
+  }
 });
 
-// правки игрока (hp/gold/name/note/photo)
-app.patch('/api/games/:code/players/:tgId', async (req, res) => {
+// chat: send
+app.post('/api/chat', async (req, res) => {
   try {
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    const { name, hp, gold, note, photo } = req.body || {};
-    await prisma.player.update({
-      where: { gameId_userTgId: { gameId: game.id, userTgId: String(req.params.tgId) } },
-      data: {
-        name:  name  === undefined ? undefined : String(name),
-        hp:    hp    === undefined ? undefined : Number(hp),
-        gold:  gold  === undefined ? undefined : Number(gold),
-        note:  note  === undefined ? undefined : String(note),
-        photo: photo === undefined ? undefined : photo
-      }
+    const { code, tgId, author, text } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+
+    const pl = await prisma.player.findFirst({ where: { gameId: game.id, tgId } });
+    if (!pl) return res.status(403).json({ error: 'NOT_IN_GAME' });
+
+    const msg = await prisma.message.create({
+      data: { gameId: game.id, authorId: pl.id, author: author || pl.name, text },
     });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    res.json(msg);
+  } catch (e) {
+    console.error('chat send', e);
+    res.status(500).json({ error: 'CHAT_SEND_FAIL' });
+  }
 });
 
-// локации
-app.get('/api/games/:code/locations', async (req, res) => {
+// player: look (reveal one floor thing to player)
+app.post('/api/look', async (req, res) => {
   try {
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    const locs = await prisma.location.findMany({
-      where: { gameId: game.id }, orderBy: { createdAt: 'asc' },
-      select: { id:true, title:true, description:true, image:true }
+    const { code, tgId } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (!game.started) return res.status(400).json({ error: 'NOT_STARTED' });
+
+    const me = await prisma.player.findFirst({ where: { gameId: game.id, tgId } });
+    if (!me) return res.status(403).json({ error: 'NOT_IN_GAME' });
+
+    const item = await prisma.item.findFirst({
+      where: { gameId: game.id, onFloor: true, revealed: false },
+      orderBy: { createdAt: 'asc' },
     });
-    res.json(locs);
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-app.post('/api/games/:code/locations', async (req, res) => {
-  try {
-    const { title, description, image } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    await prisma.location.create({ data: { gameId: game.id, title, description: description || '', image: image || null } });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-app.post('/api/games/:code/start', async (req, res) => {
-  try {
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    let loc = await prisma.location.findFirst({ where: { gameId: game.id }, orderBy: { createdAt: 'asc' } });
-    if (!loc) loc = await prisma.location.create({ data: { gameId: game.id, title: 'Первая локация', description: 'Описание первой локации' } });
-    await prisma.game.update({ where: { id: game.id }, data: { status: 'started', currentLocationId: loc.id } });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-app.post('/api/games/:code/locations/:locId/make-current', async (req, res) => {
-  try {
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    await prisma.game.update({ where: { id: game.id }, data: { currentLocationId: Number(req.params.locId) } });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    if (!item) return res.json({ ok: true, picked: null });
+
+    const updated = await prisma.item.update({
+      where: { id: item.id },
+      data: { revealed: true, onFloor: false, ownerId: me.id },
+    });
+    res.json({ ok: true, picked: updated });
+  } catch (e) {
+    console.error('look', e);
+    res.status(500).json({ error: 'LOOK_FAIL' });
+  }
 });
 
-// броски
-app.post('/api/games/:code/roll', async (req, res) => {
+// GM: adjust HP/Gold
+app.post('/api/gm/adjust', async (req, res) => {
   try {
-    const { tgId, die } = req.body || {};
-    const d = Number(die);
-    if (!tgId || ![6,8,20].includes(d)) return res.status(400).json({ error: 'Invalid params' });
+    const { code, tgId, playerId, hpDelta = 0, goldDelta = 0 } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
 
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-
-    const player = await prisma.player.findUnique({ where: { gameId_userTgId: { gameId: game.id, userTgId: String(tgId) } } });
-    if (!player) return res.status(400).json({ error: 'Player not joined' });
-
-    const result = 1 + Math.floor(Math.random() * d);
-    const roll = await prisma.roll.create({ data: { gameId: game.id, playerId: player.id, die: d, result } });
-    res.json({ tgId: String(tgId), die: roll.die, result: roll.result, at: roll.at });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    const pl = await prisma.player.update({
+      where: { id: playerId },
+      data: { hp: { increment: hpDelta }, gold: { increment: goldDelta } },
+    });
+    res.json({ ok: true, player: pl });
+  } catch (e) {
+    console.error('gm adjust', e);
+    res.status(500).json({ error: 'GM_ADJUST_FAIL' });
+  }
 });
 
-// предметы / инвентарь
-// ВНИМАНИЕ: "инвентарь игры" теперь НЕ возвращает предметы на полу (они скрыты до "осмотреться")
-app.get('/api/games/:code/items', async (req, res) => {
+// GM: give item to player or drop to floor
+app.post('/api/gm/item', async (req, res) => {
   try {
-    const ownerTgId = req.query.ownerTgId ? String(req.query.ownerTgId) : null;
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
+    const { code, tgId, title, toPlayerId, kind = 'item', amount = 1, toFloor = false } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
 
-    if (ownerTgId) {
-      const owner = await prisma.player.findUnique({ where: { gameId_userTgId: { gameId: game.id, userTgId: ownerTgId } } });
-      if (!owner) return res.json([]);
-      const rows = await prisma.item.findMany({ where: { gameId: game.id, ownerPlayerId: owner.id }, orderBy: { createdAt: 'desc' } });
-      return res.json(rows);
+    const data = {
+      title,
+      kind,
+      amount,
+      gameId: game.id,
+      onFloor: !!toFloor,
+      revealed: false,
+    };
+    if (!toFloor && toPlayerId) data['ownerId'] = toPlayerId;
+
+    const item = await prisma.item.create({ data });
+    res.json({ ok: true, item });
+  } catch (e) {
+    console.error('gm item', e);
+    res.status(500).json({ error: 'GM_ITEM_FAIL' });
+  }
+});
+
+// GM: drop gold to floor (as item kind=gold)
+app.post('/api/gm/gold-floor', async (req, res) => {
+  try {
+    const { code, tgId, amount = 1 } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
+
+    const item = await prisma.item.create({
+      data: { title: 'Gold', kind: 'gold', amount, onFloor: true, revealed: false, gameId: game.id },
+    });
+    res.json({ ok: true, item });
+  } catch (e) {
+    console.error('gm gold floor', e);
+    res.status(500).json({ error: 'GM_GOLD_FLOOR_FAIL' });
+  }
+});
+
+// GM: add location (with image upload), set current, start game
+app.post('/api/gm/location', upload.single('image'), async (req, res) => {
+  try {
+    const { code, tgId, title, descr } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
+
+    let imageUrl = null;
+    if (req.file) {
+      imageUrl = `${APP_URL}/uploads/${req.file.filename}`;
     }
-    // скрываем содержимое пола
-    return res.json([]);
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
 
-// создать предмет: если ownerTgId нет — кладём на пол текущей локации (невидимый до "осмотреться")
-app.post('/api/games/:code/items', async (req, res) => {
-  try {
-    const { name, qty = 1, note = '', type = 'misc', ownerTgId = null } = req.body || {};
-    if (!name) return res.status(400).json({ error: 'name required' });
-
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-
-    let ownerPlayerId = null, locationId = null;
-    if (ownerTgId) {
-      const owner = await prisma.player.findUnique({ where: { gameId_userTgId: { gameId: game.id, userTgId: String(ownerTgId) } } });
-      ownerPlayerId = owner?.id ?? null;
-    } else {
-      locationId = game.currentLocationId ?? null;
-    }
-    await prisma.item.create({ data: { gameId: game.id, ownerPlayerId, name, qty: Number(qty)||1, note, type, locationId } });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-
-// передать предмет игроку / обратно на пол
-app.post('/api/games/:code/items/:itemId/transfer', async (req, res) => {
-  try {
-    const { toTgId = null } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-
-    let data = {};
-    if (toTgId) {
-      const owner = await prisma.player.findUnique({ where: { gameId_userTgId: { gameId: game.id, userTgId: String(toTgId) } } });
-      data = { ownerPlayerId: owner?.id ?? null, locationId: null };
-    } else {
-      data = { ownerPlayerId: null, locationId: game.currentLocationId ?? null };
-    }
-    await prisma.item.update({ where: { id: Number(req.params.itemId) }, data });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-
-app.delete('/api/games/:code/items/:itemId', async (req, res) => {
-  try { await prisma.item.delete({ where: { id: Number(req.params.itemId) } }); res.json({ ok: true }); }
-  catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
-
-// бросить золото на пол (невидимо до "осмотреться")
-app.post('/api/games/:code/gold/drop', async (req, res) => {
-  try {
-    const amount = Math.max(1, Number(req.body?.amount || 1));
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
-    await prisma.item.create({
-      data: { gameId: game.id, ownerPlayerId: null, name: 'Золото', qty: amount, type: 'gold', note: '', locationId: game.currentLocationId ?? null }
+    const loc = await prisma.location.create({
+      data: { title, descr: descr || '', imageUrl, gameId: game.id },
     });
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
+    res.json({ ok: true, location: loc });
+  } catch (e) {
+    console.error('gm location', e);
+    res.status(500).json({ error: 'GM_LOCATION_FAIL' });
+  }
 });
 
-// "осмотреться": подобрать ОДИН предмет из пола текущей локации (если qty>1 — забираем 1 шт.)
-app.post('/api/games/:code/look-around', async (req, res) => {
+app.post('/api/gm/set-location', async (req, res) => {
   try {
-    const { tgId } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: req.params.code } });
-    if (!game) return res.status(404).json({ error: 'Game not found' });
+    const { code, tgId, locationId } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
 
-    const player = await prisma.player.findUnique({ where: { gameId_userTgId: { gameId: game.id, userTgId: String(tgId) } } });
-    if (!player) return res.status(400).json({ error: 'Player not joined' });
-
-    const floor = await prisma.item.findFirst({
-      where: { gameId: game.id, ownerPlayerId: null, locationId: game.currentLocationId ?? undefined },
-      orderBy: { createdAt: 'asc' }
+    const up = await prisma.game.update({
+      where: { id: game.id },
+      data: { currentLocationId: locationId },
+      include: { currentLocation: true },
     });
-    if (!floor) return res.json({ picked: null });
+    res.json({ ok: true, currentLocation: up.currentLocation });
+  } catch (e) {
+    console.error('set-location', e);
+    res.status(500).json({ error: 'SET_LOCATION_FAIL' });
+  }
+});
 
-    let picked;
-    if (floor.qty > 1) {
-      // забираем 1 шт игроку
-      await prisma.item.update({ where: { id: floor.id }, data: { qty: floor.qty - 1 } });
-      picked = await prisma.item.create({
-        data: { gameId: game.id, ownerPlayerId: player.id, name: floor.name, qty: 1, note: floor.note, type: floor.type }
+app.post('/api/gm/start', async (req, res) => {
+  try {
+    const { code, tgId } = req.body;
+    const game = await prisma.game.findUnique({ where: { code } });
+    if (!game) return res.status(404).json({ error: 'GAME_NOT_FOUND' });
+    if (tgId !== game.ownerTgId) return res.status(403).json({ error: 'NOT_GM' });
+
+    const up = await prisma.game.update({ where: { id: game.id }, data: { started: true } });
+    res.json({ ok: true, started: up.started });
+  } catch (e) {
+    console.error('start game', e);
+    res.status(500).json({ error: 'START_FAIL' });
+  }
+});
+
+// ================== BOT (Telegraf) ==================
+if (!BOT_TOKEN) {
+  console.error('BOT_TOKEN missing');
+} else {
+  const bot = new Telegraf(BOT_TOKEN);
+
+  bot.start(async (ctx) => {
+    return ctx.reply(
+      'Dnd Mini App. Выбери действие:',
+      Markup.inlineKeyboard([
+        Markup.button.webApp('Открыть мини‑апп', `${APP_URL}?code=&tgId=${ctx.from.id}`),
+      ])
+    );
+  });
+
+  bot.command('new', async (ctx) => {
+    const tgId = String(ctx.from.id);
+    const code = code6();
+    try {
+      // создаём игру и ГМа (или апдейтим имя ГМа как #test)
+      await prisma.game.create({
+        data: { code, ownerTgId: tgId },
       });
-    } else {
-      // целиком предмет игроку
-      picked = await prisma.item.update({
-        where: { id: floor.id }, data: { ownerPlayerId: player.id, locationId: null }
+      await prisma.player.upsert({
+        where: { tgId_gameId: { tgId, gameId: (await prisma.game.findUnique({ where: { code } })).id } },
+        create: { tgId, name: '#test', role: 'gm', gameId: (await prisma.game.findUnique({ where: { code } })).id },
+        update: {},
       });
+      await ctx.reply(`Игра создана. Код: ${code}`);
+      return ctx.reply(
+        'Открыть панель мастера',
+        Markup.inlineKeyboard([Markup.button.webApp('Открыть мини‑апп', `${APP_URL}?code=${code}&tgId=${tgId}`)])
+      );
+    } catch (e) {
+      console.error('new', e);
+      return ctx.reply('Не удалось создать игру. Попробуй ещё раз через минуту.');
     }
-    res.json({ picked });
-  } catch (e) { console.error(e); res.status(503).json({ error: 'db_unavailable' }); }
-});
+  });
 
-// --- START & WEBHOOK ------------------------------------
-const server = app.listen(PORT, async () => {
-  console.log('🌐 Web server on', PORT);
-  try {
-    await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
-    await bot.telegram.setWebhook(`${baseUrl}${webhookPath}`);
-    console.log('🔗 Webhook set:', `${baseUrl}${webhookPath}`);
-  } catch (e) { console.error('Webhook error:', e?.response?.description || e.message); }
-});
+  bot.command('join', async (ctx) => {
+    await ctx.reply('Введи код комнаты (6 символов):');
+    bot.once('text', async (m) => {
+      const code = (m.text || '').trim().toUpperCase();
+      const game = await prisma.game.findUnique({ where: { code } }).catch(() => null);
+      if (!game) return ctx.reply('Код неверный. Попробуй ещё раз.');
+      await ctx.reply(
+        `Код принят: ${code}. Открой мини‑аппу и введи имя в лобби.`,
+        Markup.inlineKeyboard([
+          Markup.button.webApp('Открыть мини‑апп', `${APP_URL}?code=${code}&tgId=${ctx.from.id}`)
+        ])
+      );
+    });
+  });
 
-process.once('SIGINT', () => server.close(() => process.exit(0)));
-process.once('SIGTERM', () => server.close(() => process.exit(0)));
+  // webhook
+  if (APP_URL) {
+    const secretPath = `/telegraf/${BOT_SECRET_PATH}`;
+    app.use(secretPath, bot.webhookCallback(secretPath));
+    await bot.telegram.setWebhook(`${APP_URL}${secretPath}`);
+    console.log('🔗 Webhook set:', `${APP_URL}${secretPath}`);
+  } else {
+    bot.launch();
+    console.log('🤖 Bot started with long polling');
+  }
+}
+
+// ================== START ==================
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🌐 Web server on ${PORT}`));
