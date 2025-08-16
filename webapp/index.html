@@ -1,442 +1,109 @@
-<!-- public/index.html -->
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <title>Dnd Mini App</title>
+  <meta charset="UTF-8" />
+  <title>DnD Mini App</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root {
-      color-scheme: dark;
-      --bg:#0d0f12; --panel:#161a20; --muted:#8ea0b3; --text:#e8eef7; --accent:#6ea8fe; --ok:#5dd39e; --danger:#ef6b73;
-      --card:#1c222b; --border:#263042;
-    }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto; background:var(--bg); color:var(--text); }
-    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-    .row { display:flex; gap:16px; }
-    .col { flex:1; }
-    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:16px; }
-    .title { font-weight:700; margin-bottom:8px; }
-    .muted { color:var(--muted); font-size: 14px; }
-    .btn { background:#243043; border:1px solid var(--border); padding:10px 14px; border-radius:10px; color:#fff; cursor:pointer; }
-    .btn.primary { background:var(--accent); border:none; }
-    .btn.ok { background:var(--ok); border:none; color:#0c1920; }
-    .btn.danger { background:var(--danger); border:none; }
-    .btn.block { width:100%; }
-    .pill { display:inline-block; padding:4px 8px; background:#1f2733; border:1px solid var(--border); border-radius:999px; margin-right:8px; font-size:12px; }
-    .input, .textarea, .select { width:100%; background:#10151d; border:1px solid var(--border); color:#fff; border-radius:10px; padding:10px; }
-    .textarea { min-height:68px; }
-    .list { display:flex; flex-direction:column; gap:8px; }
-    .rowcenter { display:flex; align-items:center; gap:8px; }
-    .bigrolls { display:flex; gap:12px; margin: 4px 0 8px; }
-    .bigrolls .btn { font-size:18px; padding:14px 16px; }
-    .avatar-grid { display:grid; grid-template-columns: repeat(6, 42px); gap:10px; margin-top:8px; }
-    .avatar { width:42px; height:42px; border-radius:50%; border:2px solid transparent; cursor:pointer; display:flex; align-items:center; justify-content:center; background:#0e141c; }
-    .avatar.selected { border-color: var(--accent); }
-    img.loc { max-width:100%; border-radius:10px; border:1px solid var(--border); }
-    .chat { max-height:260px; overflow:auto; background:#0d1219; border:1px solid var(--border); border-radius:10px; padding:10px; }
-    .chat .msg { margin-bottom:6px; }
-    .chat .who { color:#9fc2ff; margin-right:6px; }
-    .players .pl { padding:8px; border:1px solid var(--border); border-radius:10px; background:#121821; }
+    body{margin:0;background:#0f1115;color:#e8eaf0;font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
+    .wrap{max-width:720px;margin:24px auto;padding:0 16px}
+    .card{background:#161a22;border:1px solid #232838;border-radius:12px;padding:16px;margin-bottom:16px}
+    .row{display:flex;gap:12px;align-items:center}
+    input,button,select{background:#0f1320;border:1px solid #2a3145;color:#e8eaf0;border-radius:10px;padding:12px;font-size:16px}
+    button{cursor:pointer}
+    .avatars{display:flex;gap:10px;margin-top:10px}
+    .av{width:42px;height:42px;border-radius:50%;border:2px solid transparent;display:flex;align-items:center;justify-content:center;background:#0f1320}
+    .av.active{border-color:#4da3ff}
+    .note{opacity:.7}
+    .badge{display:inline-block;background:#1e2638;border:1px solid #2e3a57;padding:4px 8px;border-radius:8px;margin-left:8px}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <div class="rowcenter">
-        <div class="title">Dnd Mini App</div>
-        <div id="topCode" class="pill"></div>
-      </div>
-      <div class="muted" id="who"></div>
-    </div>
-
-    <!-- Блок «вход в лобби» -->
-    <div class="card" id="lobbyEnter">
-      <div class="title">Вход в лобби</div>
-      <div class="row" style="gap:8px;">
-        <input id="inpName" class="input" placeholder="Ваше имя" />
-        <button id="btnEnterLobby" class="btn primary">Войти</button>
-      </div>
-      <div class="muted" style="margin-top:8px;">Выберите аватар:</div>
-      <div class="avatar-grid" id="avatarGrid"></div>
-      <div class="muted" style="margin-top:8px;">После входа увидите чат и инвентарь.</div>
-    </div>
-
-    <!-- Броски (видно ТОЛЬКО после начала игры) -->
-    <div class="card" id="rollsPanel" style="display:none;">
-      <div class="title">Бросок</div>
-      <div class="bigrolls">
-        <button class="btn ok" data-roll="6">🎲 d6</button>
-        <button class="btn ok" data-roll="8">🎲 d8</button>
-        <button class="btn ok" data-roll="20">🎲 d20</button>
-      </div>
-      <div class="muted" id="rollResult"></div>
-    </div>
-
-    <!-- Локация -->
-    <div class="card" id="locationPanel" style="display:none;">
-      <div class="title">Локация: <span id="locTitle">—</span></div>
-      <div class="muted" id="locDescr">—</div>
-      <div id="locImageWrap" style="margin-top:8px;"></div>
-      <div class="row" style="margin-top:10px;">
-        <button id="btnLook" class="btn">Осмотреться</button>
-        <div class="muted" id="floorCount" style="align-self:center;"></div>
-      </div>
-    </div>
-
-    <!-- Панель мастера -->
-    <div class="card" id="gmPanel" style="display:none;">
-      <div class="title">Панель мастера</div>
       <div class="row">
-        <div class="col">
-          <div class="title muted">Игроки</div>
-          <div id="playersList" class="players list"></div>
-          <div class="title muted" style="margin-top:12px;">Выдать предмет / На пол</div>
-          <input id="gmItemTitle" class="input" placeholder="Название предмета" />
-          <div class="row" style="margin-top:8px;">
-            <select id="gmTarget" class="select"></select>
-            <button id="gmGiveItem" class="btn">Выдать игроку</button>
-            <button id="gmDropItem" class="btn">На пол</button>
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <input id="gmGoldAmt" class="input" value="1" />
-            <button id="gmGoldFloor" class="btn">Бросить золото на пол</button>
-          </div>
-        </div>
-        <div class="col">
-          <div class="title muted">Локации</div>
-          <input id="gmLocTitle" class="input" placeholder="Название локации" />
-          <textarea id="gmLocDescr" class="textarea" placeholder="Описание локации"></textarea>
-          <input id="gmLocImage" type="file" accept="image/*" class="input" />
-          <div class="row" style="margin-top:8px;">
-            <button id="gmAddLoc" class="btn">+ Добавить локацию</button>
-            <select id="gmLocSelect" class="select"></select>
-            <button id="gmSetLoc" class="btn">Сделать текущей</button>
-          </div>
-          <div class="row" style="margin-top:8px;">
-            <button id="gmStart" class="btn primary">▶ Начать игру</button>
-          </div>
-        </div>
+        <h2 style="margin:0">Dnd Mini App</h2>
+        <div class="badge" id="codeBadge">Код: ————</div>
       </div>
     </div>
 
-    <!-- Инвентари -->
-    <div class="row">
-      <div class="col">
-        <div class="card" id="gameInvCard" style="display:none;">
-          <div class="title">Инвентарь игры</div>
-          <div id="gameInv" class="list muted">Пока нет предметов</div>
-        </div>
+    <div class="card">
+      <h3 style="margin-top:0">Вход в лобби</h3>
+      <div class="row">
+        <input id="name" placeholder="Ваше имя" style="flex:1" />
+        <button id="joinBtn">Войти</button>
       </div>
-      <div class="col">
-        <div class="card" id="myInvCard" style="display:none;">
-          <div class="title">Мой инвентарь</div>
-          <div id="myInv" class="list muted">Пока пусто</div>
-        </div>
-      </div>
+      <div class="note" style="margin-top:6px">Выберите аватар:</div>
+      <div class="avatars" id="avatars"></div>
+      <div class="note" style="margin-top:8px">После входа увидите чат и инвентарь.</div>
     </div>
 
-    <!-- Чат -->
-    <div class="card" id="chatCard" style="display:none;">
-      <div class="title">Лобби/Игра — чат</div>
-      <div id="chat" class="chat"></div>
-      <div class="row" style="margin-top:8px;">
-        <input id="chatText" class="input" placeholder="Сообщение..." />
-        <button id="chatSend" class="btn primary">Отправить</button>
-      </div>
+    <div class="card" id="afterJoin" style="display:none">
+      <h3 style="margin-top:0">Вы в лобби ✅</h3>
+      <div id="players"></div>
     </div>
   </div>
 
   <script>
-    const qs = new URLSearchParams(location.search);
-    const code = (qs.get('code') || '').toUpperCase();
-    const tgId = qs.get('tgId') || '';
+    const AVS = ["🛡️","🗡️","🏹","🧙","🧝","🐺"];
+    let selectedAvatar = AVS[0];
+    const tgId = (window.Telegram?.WebApp?.initDataUnsafe?.user?.id || Math.floor(Math.random()*1e9)).toString();
 
-    // аватары (иконки)
-    const AVATARS = [
-      '🛡️','🗡️','🏹','🧙','🧝','🐺'
-    ];
-    let selectedAvatar = AVATARS[0];
+    // parse code= from URL
+    const params = new URLSearchParams(location.search);
+    const code = (params.get("code") || "").toUpperCase();
+    document.getElementById("codeBadge").textContent = "Код: " + (code || "———");
 
-    const el = (id) => document.getElementById(id);
-    el('topCode').textContent = code ? `Код: ${code}` : '';
-
-    // инициализация гриды аватаров
-    const grid = el('avatarGrid');
-    AVATARS.forEach(a => {
-      const div = document.createElement('div');
-      div.className = 'avatar';
-      if (a === selectedAvatar) div.classList.add('selected');
-      div.textContent = a;
-      div.onclick = () => {
-        selectedAvatar = a;
-        grid.querySelectorAll('.avatar').forEach(x=>x.classList.remove('selected'));
-        div.classList.add('selected');
+    // avatars UI
+    const avBox = document.getElementById("avatars");
+    AVS.forEach((ch, i) => {
+      const d = document.createElement("div");
+      d.className = "av" + (i===0 ? " active" : "");
+      d.textContent = ch;
+      d.onclick = () => {
+        selectedAvatar = ch;
+        [...avBox.children].forEach(x => x.classList.remove("active"));
+        d.classList.add("active");
       };
-      grid.appendChild(div);
+      avBox.appendChild(d);
     });
 
-    // state
-    let STATE = null; // server state
-    async function loadState() {
-      if (!code) return;
-      const r = await fetch(`/api/state?code=${code}&tgId=${tgId}`);
-      if (!r.ok) return;
-      STATE = await r.json();
-      render();
-    }
-
-    function myRole() {
-      return STATE?.me?.role || 'player';
-    }
-
-    function render() {
-      // верх: кто я
-      el('who').textContent = STATE?.me
-        ? `Вы: ${STATE.me.name} (${STATE.me.role}) | HP: ${STATE.me.hp} | Gold: ${STATE.me.gold}`
-        : `Вы: Гость`;
-
-      const joined = !!STATE?.me;
-      const started = !!STATE?.game?.started;
-
-      // 1) ВХОД В ЛОББИ
-      el('lobbyEnter').style.display = joined ? 'none' : 'block';
-
-      // 2) GM панель
-      el('gmPanel').style.display = joined && myRole()==='gm' ? 'block' : 'none';
-
-      // 3) Инвентари: до входа — скрыто
-      el('gameInvCard').style.display = joined ? 'block' : 'none';
-      el('myInvCard').style.display   = joined ? 'block' : 'none';
-
-      // 4) Чат: после входа всегда
-      el('chatCard').style.display = joined ? 'block' : 'none';
-
-      // 5) Роллы/Локация — только после старта игры
-      el('rollsPanel').style.display = (joined && started) ? 'block' : 'none';
-      el('locationPanel').style.display = (joined && started) ? 'block' : 'none';
-
-      // наполнение инвентарей
-      const gameInv = el('gameInv');
-      const floor = (STATE?.floorVisible || []);
-      gameInv.innerHTML = floor.length ? '' : '<div class="muted">Пока нет предметов</div>';
-      floor.forEach(it => {
-        const d = document.createElement('div');
-        d.textContent = it.kind === 'gold' ? `🪙 Золото x${it.amount}` : `📦 ${it.title}`;
-        gameInv.appendChild(d);
-      });
-
-      const myInv = el('myInv');
-      const mine = (STATE?.myInventory || []);
-      myInv.innerHTML = mine.length ? '' : '<div class="muted">Пока пусто</div>';
-      mine.forEach(it => {
-        const d = document.createElement('div');
-        d.textContent = it.kind === 'gold' ? `🪙 Золото x${it.amount}` : `📦 ${it.title}`;
-        myInv.appendChild(d);
-      });
-
-      // локация
-      const loc = STATE?.game?.currentLocation;
-      el('locTitle').textContent = loc?.title || '—';
-      el('locDescr').textContent = loc?.descr || '—';
-      const imgWrap = el('locImageWrap');
-      imgWrap.innerHTML = '';
-      if (loc?.imageUrl) {
-        const im = document.createElement('img');
-        im.className = 'loc';
-        im.src = loc.imageUrl;
-        imgWrap.appendChild(im);
-      }
-      el('floorCount').textContent = STATE?.floorHiddenCount ? `На полу что-то есть…` : '';
-
-      // GM specifics
-      if (myRole()==='gm') {
-        // players list + +/-
-        const list = el('playersList');
-        list.innerHTML = '';
-        const sel = el('gmTarget');
-        sel.innerHTML = '';
-        (STATE?.players || []).filter(p=>p.role!=='gm').forEach(p=>{
-          const r = document.createElement('div');
-          r.className='pl';
-          r.innerHTML = `
-            <div><b>${p.name}</b> ${p.avatar||''}</div>
-            <div class="muted">HP: ${p.hp} | Gold: ${p.gold}</div>
-            <div class="row" style="margin-top:6px;">
-              <button class="btn" data-hp="-1" data-id="${p.id}">-HP</button>
-              <button class="btn" data-hp="+1" data-id="${p.id}">+HP</button>
-              <button class="btn" data-gold="+1" data-id="${p.id}">+Gold</button>
-              <button class="btn" data-gold="-1" data-id="${p.id}">-Gold</button>
-            </div>
-          `;
-          list.appendChild(r);
-          const opt = document.createElement('option');
-          opt.value = p.id; opt.textContent = p.name;
-          sel.appendChild(opt);
+    async function joinLobby(){
+      const name = document.getElementById("name").value.trim();
+      if(!code){ alert("Нет кода игры в URL."); return; }
+      if(!name){ alert("Введите имя."); return; }
+      try{
+        const r = await fetch(`/api/game/${code}/lobby/join`, {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ tgId, name, avatar: selectedAvatar })
         });
-
-        // локации селект
-        const lsel = el('gmLocSelect');
-        lsel.innerHTML = '';
-        (STATE?.game && STATE?.game?.currentLocation ? [STATE.game.currentLocation] : []);
-        (STATE?.game ? STATE.game : null);
-        // подтянем все локации из state.players нельзя — их нет; запросим при клике кнопки
+        const j = await r.json();
+        if(!j.ok) throw new Error(j.error || "join failed");
+        document.getElementById("afterJoin").style.display = "block";
+        await refreshPlayers();
+        alert("Вход выполнен!");
+      }catch(e){
+        alert("Не удалось войти в лобби");
       }
     }
 
-    // enter lobby
-    el('btnEnterLobby').onclick = async () => {
-      const name = el('inpName').value.trim();
-      if (!name) return alert('Введите имя');
-      const r = await fetch('/api/join-lobby', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, name, avatar: selectedAvatar })
-      });
-      if (r.ok) {
-        await loadState();
-      } else {
-        alert('Не удалось войти в лобби');
-      }
-    };
-
-    // rolls
-    document.querySelectorAll('.bigrolls .btn').forEach(b=>{
-      b.onclick = () => {
-        const sides = Number(b.dataset.roll);
-        const v = Math.floor(Math.random()*sides)+1;
-        el('rollResult').textContent = `Результат: ${v} (d${sides})`;
-      };
-    });
-
-    // look
-    el('btnLook').onclick = async () => {
-      const r = await fetch('/api/look', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId })
-      });
-      const data = await r.json();
-      if (data?.picked) {
-        await loadState();
-      }
-    };
-
-    // chat
-    async function loadChat() {
-      if (!code) return;
-      const r = await fetch(`/api/chat?code=${code}`);
-      if (!r.ok) return;
-      const msgs = await r.json();
-      const box = el('chat');
-      box.innerHTML = '';
-      msgs.forEach(m=>{
-        const div = document.createElement('div');
-        div.className='msg';
-        div.innerHTML = `<span class="who">${m.author}:</span> ${m.text}`;
-        box.appendChild(div);
-      });
-      box.scrollTop = box.scrollHeight;
-    }
-    el('chatSend').onclick = async () => {
-      const t = el('chatText').value.trim();
-      if (!t) return;
-      await fetch('/api/chat', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, text: t })
-      });
-      el('chatText').value='';
-      loadChat();
-    };
-
-    // GM buttons
-    document.addEventListener('click', async (e) => {
-      const target = e.target;
-      if (!(target instanceof HTMLElement)) return;
-
-      // +/- HP/Gold
-      if (target.dataset?.hp || target.dataset?.gold) {
-        const playerId = target.dataset.id;
-        const hpDelta = target.dataset.hp ? Number(target.dataset.hp) : 0;
-        const goldDelta = target.dataset.gold ? Number(target.dataset.gold) : 0;
-        await fetch('/api/gm/adjust', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ code, tgId, playerId, hpDelta, goldDelta })
+    async function refreshPlayers(){
+      try{
+        const r = await fetch(`/api/game/${code}`);
+        const j = await r.json();
+        if(!j.ok) return;
+        const box = document.getElementById("players");
+        box.innerHTML = "";
+        j.game.players.forEach(p=>{
+          const d = document.createElement("div");
+          d.textContent = `${p.name} ${p.avatar || ""} — gold:${p.gold} hp:${p.hp}`;
+          box.appendChild(d);
         });
-        await loadState();
-      }
-    });
+      }catch(e){}
+    }
 
-    el('gmGiveItem').onclick = async () => {
-      const title = el('gmItemTitle').value.trim();
-      const toPlayerId = el('gmTarget').value;
-      if (!title || !toPlayerId) return;
-      await fetch('/api/gm/item', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, title, toPlayerId })
-      });
-      el('gmItemTitle').value='';
-      await loadState();
-    };
-    el('gmDropItem').onclick = async () => {
-      const title = el('gmItemTitle').value.trim();
-      if (!title) return;
-      await fetch('/api/gm/item', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, title, toFloor:true })
-      });
-      el('gmItemTitle').value='';
-      await loadState();
-    };
-    el('gmGoldFloor').onclick = async () => {
-      const amount = Number(el('gmGoldAmt').value||'1');
-      await fetch('/api/gm/gold-floor', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, amount })
-      });
-      await loadState();
-    };
-
-    el('gmAddLoc').onclick = async () => {
-      const title = el('gmLocTitle').value.trim();
-      const descr = el('gmLocDescr').value.trim();
-      if (!title) return alert('Введите название локации');
-      const f = new FormData();
-      f.append('code', code);
-      f.append('tgId', tgId);
-      f.append('title', title);
-      f.append('descr', descr);
-      const file = el('gmLocImage').files[0];
-      if (file) f.append('image', file);
-      await fetch('/api/gm/location', { method:'POST', body: f });
-      el('gmLocTitle').value='';
-      el('gmLocDescr').value='';
-      el('gmLocImage').value='';
-      await loadState();
-    };
-    el('gmSetLoc').onclick = async () => {
-      // подхватить последнюю добавленную/текущую нельзя без доп-запроса.
-      // упрощение: берём ID из prompt (или сделай выпадашку — при желании расширим)
-      const id = prompt('Введи ID локации (в проде сделаем список)');
-      if (!id) return;
-      await fetch('/api/gm/set-location', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId, locationId: id })
-      });
-      await loadState();
-    };
-    el('gmStart').onclick = async () => {
-      await fetch('/api/gm/start', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ code, tgId })
-      });
-      await loadState();
-    };
-
-    // поллинг
-    setInterval(loadState, 2500);
-    setInterval(loadChat, 2500);
-
-    // init
-    loadState(); loadChat();
+    document.getElementById("joinBtn").onclick = joinLobby;
   </script>
 </body>
 </html>
