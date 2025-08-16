@@ -9,67 +9,84 @@ datasource db {
 }
 
 model Game {
-  id               String     @id @default(cuid())
-  code             String     @unique
-  ownerTgId        String     // tgId мастера
-  started          Boolean    @default(false)
-  currentLocation  Location?  @relation("CurrentLocation", fields: [currentLocationId], references: [id])
-  currentLocationId String?
-  createdAt        DateTime   @default(now())
-  players          Player[]
-  items            Item[]
-  locations        Location[]
-  messages         Message[]
+  code          String   @id
+  gmId          String
+  started       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  lastActivity  DateTime @default(now())
+  expiresAt     DateTime
+
+  // связи
+  players       Player[]
+  items         Item[]
+  messages      Message[]
+  locations     Location[]
+  location      Location? @relation("CurrentLocation", fields: [locationId], references: [id])
+  locationId    String?
+
+  @@index([expiresAt])
 }
 
 model Player {
   id        String   @id @default(cuid())
-  tgId      String   // уникальный tgId
+  gameCode  String
+  userId    String
   name      String
-  avatar    String?  // url или ключ иконки
-  role      String   // "gm" | "player"
+  avatar    String?
   hp        Int      @default(10)
   gold      Int      @default(0)
-  desc      String   @default("")
-  game      Game     @relation(fields: [gameId], references: [id])
-  gameId    String
-  items     Item[]   @relation("OwnerItems")
   createdAt DateTime @default(now())
+
+  game      Game     @relation(fields: [gameCode], references: [code])
+  items     Item[]
+
+  @@unique([gameCode, userId])
+}
+
+enum ItemType {
+  item
+  gold
 }
 
 model Item {
-  id         String   @id @default(cuid())
-  title      String
-  kind       String   @default("item") // "item"|"gold"
-  amount     Int      @default(1)      // для gold
-  onFloor    Boolean  @default(false)
-  revealed   Boolean  @default(false)  // появляется игроку по «Осмотреться»
-  game       Game     @relation(fields: [gameId], references: [id])
-  gameId     String
-  owner      Player?  @relation("OwnerItems", fields: [ownerId], references: [id])
-  ownerId    String?
-  createdAt  DateTime @default(now())
-}
-
-model Location {
   id        String   @id @default(cuid())
-  title     String
-  descr     String   @default("")
-  imageUrl  String?  // загружаемая картинка
-  game      Game     @relation(fields: [gameId], references: [id])
-  gameId    String
+  gameCode  String
+  name      String
+  type      ItemType @default(item)
+  amount    Int?
+  onFloor   Boolean  @default(true)
+  ownerId   String?
   createdAt DateTime @default(now())
 
-  // обратная связь для currentLocation
-  Game      Game[]   @relation("CurrentLocation")
+  game      Game     @relation(fields: [gameCode], references: [code])
+  owner     Player?  @relation(fields: [ownerId], references: [id])
+
+  @@index([gameCode, onFloor, createdAt])
 }
 
 model Message {
   id        String   @id @default(cuid())
-  game      Game     @relation(fields: [gameId], references: [id])
-  gameId    String
-  authorId  String
-  author    String
+  gameCode  String
+  userId    String
+  name      String
   text      String
   createdAt DateTime @default(now())
+
+  game      Game     @relation(fields: [gameCode], references: [code])
+
+  @@index([gameCode, createdAt])
+}
+
+model Location {
+  id          String   @id @default(cuid())
+  gameCode    String
+  title       String
+  description String?
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+
+  game        Game     @relation(fields: [gameCode], references: [code])
+  currentIn   Game[]   @relation("CurrentLocation")
+
+  @@index([gameCode])
 }
