@@ -1,4 +1,4 @@
-// server.js — Telegraf (webhook) + Express + Prisma (Supabase) + Inventory (raw SQL)
+// server.js — Telegraf (webhook) + Express + Prisma (Supabase) + GM панель + инвентарь
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -26,7 +26,7 @@ const bot = new Telegraf(BOT_TOKEN);
 const baseUrl = APP_URL || `http://localhost:${PORT}`;
 const webhookPath = `/telegraf/${BOT_SECRET_PATH}`;
 
-// Логи апдейтов (удобно дебажить)
+// логи апдейтов (удобно дебажить)
 bot.use((ctx, next) => { console.log('Update:', ctx.updateType); return next(); });
 
 // Команды
@@ -39,7 +39,6 @@ bot.start((ctx) =>
 
 bot.command('ping', (ctx) => ctx.reply('pong'));
 
-// /new — создать игру
 bot.command(['new', 'startgame'], async (ctx) => {
   try {
     console.log('CMD /new from', ctx.from?.id);
@@ -55,7 +54,6 @@ bot.command(['new', 'startgame'], async (ctx) => {
   }
 });
 
-// /join — присоединиться по коду
 bot.command('join', (ctx) => {
   ctx.reply('Введи код комнаты (6 символов):');
   const handler = async (ctx2) => {
@@ -74,29 +72,28 @@ bot.command('join', (ctx) => {
       'Заходим!',
       Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]])
     );
-    bot.off('text', handler); // одноразовый обработчик
+    bot.off('text', handler);
   };
   bot.on('text', handler);
 });
 
-// Быстрые броски из чата
 bot.hears(/^\/roll (d6|d8|d20)$/i, (ctx) => {
   const die = Number(ctx.match[1].slice(1));
   const result = 1 + Math.floor(Math.random() * die);
   return ctx.reply(`🎲 ${ctx.from.first_name} бросил d${die}: *${result}*`, { parse_mode: 'Markdown' });
 });
 
-// ===== Вебхук (явный POST, сверху) =====
+// ===== Webhook (явный POST) =====
 app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
-app.get(webhookPath, (_req, res) => res.status(200).send('ok')); // проверка
+app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
 
-// ===== Mini‑app (static) + Health =====
+// ===== Static + health =====
 app.use(express.static('webapp'));
 app.get('/health', (_req, res) => res.send('ok'));
 
 // ===== API: игры/игроки/броски =====
 
-// Создать игру (кнопка GM в мини‑аппе)
+// Создать игру из мини‑аппы (кнопка GM)
 app.post('/api/games', async (req, res) => {
   try {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -126,7 +123,7 @@ app.post('/api/games/:code/join', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Состояние игры (+ isGM по tgId из query)
+// Информация об игре (плюс isGM)
 app.get('/api/games/:code', async (req, res) => {
   const game = await prisma.game.findUnique({
     where: { code: req.params.code },
@@ -148,7 +145,26 @@ app.get('/api/games/:code', async (req, res) => {
   });
 });
 
-// Бросок кости (сохранение)
+// Обновить игрока (GM‑панель): hp/gold/name
+app.patch('/api/games/:code/players/:tgId', async (req, res) => {
+  const game = await prisma.game.findUnique({ where: { code: req.params.code } });
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+
+  const { name, hp, gold } = req.body || {};
+  const data = {};
+  if (name !== undefined) data.name = String(name);
+  if (hp !== undefined)   data.hp   = Number(hp);
+  if (gold !== undefined) data.gold = Number(gold);
+
+  const player = await prisma.player.update({
+    where: { gameId_userTgId: { gameId: game.id, userTgId: String(req.params.tgId) } },
+    data
+  });
+
+  res.json({ ok: true, player });
+});
+
+// Бросок кости
 app.post('/api/games/:code/roll', async (req, res) => {
   const { tgId, die } = req.body || {};
   const d = Number(die);
@@ -170,12 +186,27 @@ app.post('/api/games/:code/roll', async (req, res) => {
   res.json({ tgId: player.userTgId, die: roll.die, result: roll.result, at: roll.at });
 });
 
-// ===== API: Инвентарь (через raw SQL — без изменения Prisma схемы) =====
+// ===== API: Инвентарь =====
 
-// Получить инвентарь игры (все предметы, с владельцами)
+// Список предметов игры.
+// Опционально ?ownerTgId=... — вернуть предметы только этого игрока.
 app.get('/api/games/:code/items', async (req, res) => {
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
   if (!game) return res.status(404).json({ error: 'Game not found' });
+
+  const ownerTgId = req.query.ownerTgId ? String(req.query.ownerTgId) : null;
+
+  if (ownerTgId) {
+    const items = await prisma.$queryRaw`
+      select i.id, i.name, i.qty, i.note, i."ownerPlayerId",
+             p."userTgId" as "ownerTgId", p.name as "ownerName"
+      from "Item" i
+      join "Player" p on p.id = i."ownerPlayerId"
+      where i."gameId" = ${game.id} and p."userTgId" = ${ownerTgId}
+      order by i."createdAt" desc
+    `;
+    return res.json(items);
+  }
 
   const items = await prisma.$queryRaw`
     select i.id, i.name, i.qty, i.note, i."ownerPlayerId",
@@ -188,7 +219,7 @@ app.get('/api/games/:code/items', async (req, res) => {
   res.json(items);
 });
 
-// Добавить предмет (GM или кто угодно — MVP)
+// Добавить предмет (GM): можно сразу назначить ownerTgId, либо оставить на полу
 app.post('/api/games/:code/items', async (req, res) => {
   const { name, qty = 1, note = '', ownerTgId = null } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -208,11 +239,10 @@ app.post('/api/games/:code/items', async (req, res) => {
     insert into "Item" ("gameId","ownerPlayerId","name","qty","note")
     values (${game.id}, ${ownerPlayerId}, ${name}, ${Number(qty) || 1}, ${note})
   `;
-
   res.json({ ok: true });
 });
 
-// Передать/уронить предмет
+// Передать предмет другому игроку (или уронить на пол)
 app.post('/api/games/:code/items/:itemId/transfer', async (req, res) => {
   const { toTgId = null } = req.body || {};
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
