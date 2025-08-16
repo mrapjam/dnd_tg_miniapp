@@ -1,4 +1,4 @@
-// Telegraf (webhook) + Express + Prisma + Lobby/Chat/Locations + Inventory & Floor loot
+// Telegraf + Express + Prisma + Lobby/Chat/Locations + Inventory with floor-by-location + GM guard
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -37,13 +37,13 @@ bot.start((ctx) =>
 
 bot.command('ping', (ctx) => ctx.reply('pong'));
 
-// /new — создаёт игру, только через чат (ГМ)
+// /new — только в чате
 bot.command(['new', 'startgame'], async (ctx) => {
   try {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
     await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
     await ctx.reply(
-      `Игра создана. Код: ${code}\nЗайди в мини‑аппу, введи код и управляй из панели мастера.`,
+      `Игра создана. Код: ${code}\nОткрой мини‑аппу.`,
       Markup.inlineKeyboard([[Markup.button.webApp('Панель мастера', `${baseUrl}/?code=${code}`)]])
     );
   } catch (e) {
@@ -52,14 +52,13 @@ bot.command(['new', 'startgame'], async (ctx) => {
   }
 });
 
-// /join — только ввод кода, имя вводится в мини‑аппе
+// /join — имя вводим в mini-app
 bot.command('join', (ctx) => {
   ctx.reply('Введи код комнаты (6 символов):');
   const askCode = async (ctx2) => {
     const code = (ctx2.message.text || '').trim().toUpperCase();
     const game = await prisma.game.findUnique({ where: { code } });
     if (!game) { await ctx2.reply('Игры с таким кодом нет. Введи код ещё раз:'); return; }
-
     await ctx2.reply(
       'Открывай мини‑аппу и введи имя в лобби.',
       Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑апп', `${baseUrl}/?code=${code}`)]])
@@ -90,8 +89,7 @@ app.get('/db-check', async (_req, res) => {
 
 // ===== Helpers
 async function findGameByCode(code) {
-  const game = await prisma.game.findUnique({ where: { code } });
-  return game;
+  return prisma.game.findUnique({ where: { code } });
 }
 async function ensurePlayer(gameId, tgId, name) {
   return prisma.player.upsert({
@@ -100,9 +98,19 @@ async function ensurePlayer(gameId, tgId, name) {
     update: name ? { name } : {}
   });
 }
+// Простая проверка «ГМ ли это»: клиент шлёт заголовок X-Tg-Id (его Telegram user id)
+// В проде стоит проверять initData hash — для MVP оставим так.
+async function assertGM(req, res, next) {
+  const tgId = String(req.headers['x-tg-id'] || '');
+  const code = req.params.code;
+  const game = await findGameByCode(code);
+  if (!game) return res.status(404).json({ error: 'Game not found' });
+  if (tgId !== game.gmTgId) return res.status(403).json({ error: 'forbidden' });
+  req.game = game;
+  next();
+}
 
 // ===== API: core game
-// Создать игру из мини‑аппы (кнопка показывается только ГМу / без кода)
 app.post('/api/games', async (req, res) => {
   try {
     const code = Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -115,7 +123,7 @@ app.post('/api/games', async (req, res) => {
   }
 });
 
-// Войти в лобби: создать/обновить игрока
+// Войти в лобби
 app.post('/api/games/:code/join', async (req, res) => {
   const game = await findGameByCode(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -125,7 +133,7 @@ app.post('/api/games/:code/join', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Информация об игре (универсально для лобби/игры)
+// Состояние игры
 app.get('/api/games/:code', async (req, res) => {
   const game = await prisma.game.findUnique({
     where: { code: req.params.code },
@@ -136,7 +144,6 @@ app.get('/api/games/:code', async (req, res) => {
   const qTgId = req.query.tgId ? String(req.query.tgId) : null;
   const isGM = qTgId ? (game.gmTgId === qTgId) : false;
 
-  // текущая локация
   let currentLocation = null;
   if (game.currentLocationId) {
     const rows = await prisma.$queryRaw`
@@ -147,7 +154,7 @@ app.get('/api/games/:code', async (req, res) => {
 
   res.json({
     code: game.code,
-    status: game.status, // 'lobby' | 'started'
+    status: game.status,
     isGM,
     gmTgId: game.gmTgId,
     currentLocation,
@@ -201,7 +208,7 @@ app.post('/api/games/:code/messages', async (req, res) => {
   res.json({ ok: true });
 });
 
-// ===== Locations
+// ===== Locations (GM-only)
 app.get('/api/games/:code/locations', async (req, res) => {
   const game = await findGameByCode(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -213,9 +220,8 @@ app.get('/api/games/:code/locations', async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/games/:code/locations', async (req, res) => {
-  const game = await findGameByCode(req.params.code);
-  if (!game) return res.status(404).json({ error: 'Game not found' });
+app.post('/api/games/:code/locations', assertGM, async (req, res) => {
+  const game = req.game;
   const { title, description } = req.body || {};
   if (!title) return res.status(400).json({ error: 'title required' });
   await prisma.$executeRaw`
@@ -225,11 +231,8 @@ app.post('/api/games/:code/locations', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/games/:code/start', async (req, res) => {
-  const game = await findGameByCode(req.params.code);
-  if (!game) return res.status(404).json({ error: 'Game not found' });
-
-  // Если нет локаций — создадим базовую
+app.post('/api/games/:code/start', assertGM, async (req, res) => {
+  const game = req.game;
   const locs = await prisma.$queryRaw`
     select id from "Location" where "gameId" = ${game.id} order by "createdAt" asc
   `;
@@ -255,9 +258,8 @@ app.post('/api/games/:code/start', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/games/:code/locations/:locId/make-current', async (req, res) => {
-  const game = await findGameByCode(req.params.code);
-  if (!game) return res.status(404).json({ error: 'Game not found' });
+app.post('/api/games/:code/locations/:locId/make-current', assertGM, async (req, res) => {
+  const game = req.game;
   await prisma.$executeRaw`
     update "Game"
     set "currentLocationId" = ${req.params.locId}
@@ -288,17 +290,16 @@ app.post('/api/games/:code/roll', async (req, res) => {
   res.json({ tgId: player.userTgId, die: roll.die, result: roll.result, at: roll.at });
 });
 
-// ===== Inventory & floor loot
+// ===== Inventory & floor-by-location
 // Список предметов игры. ?ownerTgId=... — только этого игрока.
 app.get('/api/games/:code/items', async (req, res) => {
   const game = await findGameByCode(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
-
   const ownerTgId = req.query.ownerTgId ? String(req.query.ownerTgId) : null;
 
   if (ownerTgId) {
     const items = await prisma.$queryRaw`
-      select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId",
+      select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId", i."locationId",
              p."userTgId" as "ownerTgId", p.name as "ownerName"
       from "Item" i
       join "Player" p on p.id = i."ownerPlayerId"
@@ -308,67 +309,78 @@ app.get('/api/games/:code/items', async (req, res) => {
     return res.json(items);
   }
 
+  const curLocId = game.currentLocationId || null;
   const items = await prisma.$queryRaw`
-    select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId",
-           p."userTgId" as "ownerTgId", p.name as "ownerName"
+    select i.id, i.name, i.qty, i.note, i.type, i."ownerPlayerId", i."locationId",
+           p."userTgId" as "ownerTgId", p.name as "ownerName",
+           case when i."ownerPlayerId" is null and i."locationId" is not null then 'floor' else 'inv' end as place
     from "Item" i
     left join "Player" p on p.id = i."ownerPlayerId"
     where i."gameId" = ${game.id}
     order by i."createdAt" desc
   `;
-  res.json(items);
+  res.json(items.map(it => ({ ...it, isInCurrentLocation: it.locationId === curLocId })));
 });
 
-// Добавить/выдать предмет (GM). ownerTgId=null => на пол
-app.post('/api/games/:code/items', async (req, res) => {
-  const game = await findGameByCode(req.params.code);
-  if (!game) return res.status(404).json({ error: 'Game not found' });
+// Добавить/выдать предмет (GM). ownerTgId=null => на пол в ТЕКУЩЕЙ локации
+app.post('/api/games/:code/items', assertGM, async (req, res) => {
+  const game = req.game;
   const { name, qty = 1, note = '', type = 'misc', ownerTgId = null } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
 
   let ownerPlayerId = null;
+  let locationId = null;
+
   if (ownerTgId) {
     const p = await prisma.player.findUnique({
       where: { gameId_userTgId: { gameId: game.id, userTgId: String(ownerTgId) } }
     });
     ownerPlayerId = p?.id || null;
+  } else {
+    // на пол в текущей локации (если игра уже начата)
+    locationId = game.currentLocationId || null;
   }
 
   await prisma.$executeRaw`
-    insert into "Item" ("gameId","ownerPlayerId","name","qty","note","type")
-    values (${game.id}, ${ownerPlayerId}, ${name}, ${Number(qty)||1}, ${note}, ${type})
+    insert into "Item" ("gameId","ownerPlayerId","name","qty","note","type","locationId")
+    values (${game.id}, ${ownerPlayerId}, ${name}, ${Number(qty)||1}, ${note}, ${type}, ${locationId})
   `;
   res.json({ ok: true });
 });
 
-// Передать предмет (или на пол)
+// Передать предмет (или на пол ТЕКУЩЕЙ локации)
 app.post('/api/games/:code/items/:itemId/transfer', async (req, res) => {
+  const { toTgId = null } = req.body || {};
   const game = await findGameByCode(req.params.code);
   if (!game) return res.status(404).json({ error: 'Game not found' });
-  const { toTgId = null } = req.body || {};
 
   let newOwnerId = null;
+  let locationId = null;
+
   if (toTgId) {
     const p = await prisma.player.findUnique({
       where: { gameId_userTgId: { gameId: game.id, userTgId: String(toTgId) } }
     });
     newOwnerId = p?.id || null;
+  } else {
+    // на пол в текущей локации
+    locationId = game.currentLocationId || null;
   }
 
   await prisma.$executeRaw`
-    update "Item" set "ownerPlayerId" = ${newOwnerId}
+    update "Item" set "ownerPlayerId" = ${newOwnerId}, "locationId" = ${locationId}
     where id = ${req.params.itemId}
   `;
   res.json({ ok: true });
 });
 
-// Удалить предмет
-app.delete('/api/games/:code/items/:itemId', async (req, res) => {
+// Удалить предмет (GM-only)
+app.delete('/api/games/:code/items/:itemId', assertGM, async (req, res) => {
   await prisma.$executeRaw`delete from "Item" where id = ${req.params.itemId}`;
   res.json({ ok: true });
 });
 
-// Осмотреться: забрать ВСЁ, что на полу (GM положил)
+// Осмотреться: взять ВСЁ «на полу в текущей локации»
 app.post('/api/games/:code/look-around', async (req, res) => {
   const { tgId } = req.body || {};
   const game = await findGameByCode(req.params.code);
@@ -382,20 +394,21 @@ app.post('/api/games/:code/look-around', async (req, res) => {
 
   await prisma.$executeRaw`
     update "Item"
-    set "ownerPlayerId" = ${player.id}
-    where "gameId" = ${game.id} and "ownerPlayerId" is null
+    set "ownerPlayerId" = ${player.id}, "locationId" = null
+    where "gameId" = ${game.id}
+      and "ownerPlayerId" is null
+      and "locationId" = ${game.currentLocationId || null}
   `;
   res.json({ ok: true });
 });
 
-// Быстрые «золото на пол» (создаём предмет "Золото")
-app.post('/api/games/:code/gold/drop', async (req, res) => {
+// Бросить золото на пол (GM-only) — предмет "Золото" в текущей локации
+app.post('/api/games/:code/gold/drop', assertGM, async (req, res) => {
+  const game = req.game;
   const { amount = 1 } = req.body || {};
-  const game = await findGameByCode(req.params.code);
-  if (!game) return res.status(404).json({ error: 'Game not found' });
   await prisma.$executeRaw`
-    insert into "Item" ("gameId","ownerPlayerId","name","qty","note","type")
-    values (${game.id}, null, ${'Золото'}, ${Number(amount)||1}, ${''}, ${'gold'})
+    insert into "Item" ("gameId","ownerPlayerId","name","qty","note","type","locationId")
+    values (${game.id}, null, ${'Золото'}, ${Number(amount)||1}, ${''}, ${'gold'}, ${game.currentLocationId || null})
   `;
   res.json({ ok: true });
 });
