@@ -4,713 +4,556 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import { PrismaClient } from "@prisma/client";
 import { Telegraf, Markup } from "telegraf";
+
+// Prisma (опционально)
+let PrismaClient = null;
+try {
+  ({ PrismaClient } = await import('@prisma/client'));
+} catch (_) {
+  // нет prisma в зависимостях — ок, уйдём в память
+}
 
 dotenv.config();
 
+// ---------- Paths / Const ----------
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
-const PORT = process.env.PORT || 10000;
-const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
-const BOT_TOKEN = process.env.BOT_TOKEN || "";
-const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || ("telegraf-" + Math.random().toString(16).slice(2, 8));
-const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-const pendingJoinUsers = new Set(); // набор userId, для кого ждём код
+const PORT          = process.env.PORT || 10000;
+const APP_URL       = process.env.APP_URL || `http://localhost:${PORT}`;
+const BOT_TOKEN     = process.env.BOT_TOKEN;
+const BOT_SECRET    = process.env.BOT_SECRET_PATH || ("telegraf-" + Math.random().toString(36).slice(2));
+const SIX_HOURS_MS  = 6 * 60 * 60 * 1000;
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// ---------- STATIC FRONTEND (webapp/) ----------
+// ---------- Static ----------
 const WEB_DIR = path.join(__dirname, "webapp");
+if (process.env.NODE_ENV !== 'production') {
+  console.log("Static from:", WEB_DIR);
+}
 app.use(express.static(WEB_DIR));
-app.get("/", (req, res) => {
-  res.sendFile(path.join(WEB_DIR, "index.html"));
+// root fallback на корневой index.html (если он есть)
+app.get("/", (req, res, next) => {
+  const rootIndex = path.join(__dirname, "index.html");
+  res.sendFile(rootIndex, (err) => {
+    if (err) res.sendFile(path.join(WEB_DIR, "index.html"));
+  });
 });
 
-// ---------- HELPERS ----------
+// ---------- Helpers ----------
 const nowTs = () => Date.now();
-const genCode = () =>
-  Math.random().toString(36).replace(/[^a-z0-9]/gi, "").toUpperCase().slice(2, 8);
-
-const AVATARS = [
-  "shield", "sword", "bow", "mage", "scout", "horse"
-];
-
 const addMs = (d, ms) => new Date(d.getTime() + ms);
+const genCode = () =>
+  Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(2, 8).padEnd(6, 'X').slice(0, 6);
 
-// ---------- PRISMA (fallback на память) ----------
-let prisma = null;
-try {
-  if (process.env.DATABASE_URL) {
-    prisma = new PrismaClient();
-    // простая проверка подключения
-    prisma.$queryRawUnsafe(`SELECT 1`).catch(() => {});
-  }
-} catch (_) {
-  prisma = null;
-}
+const ok = (res, data={}) => res.json({ ok: true, data });
+const err = (res, message="error") => res.status(400).json({ ok:false, error: message });
 
-// ---------- In‑memory для fallback ----------
+// ---------- In-memory store (fallback) ----------
 const mem = {
-  games: new Map(), // code -> { code, gmId, started, createdAt, expiresAt, locationId, players: Map(userId->player), floor:[], chat:[], locations: Map(id->{}) }
+  games: new Map(), // code -> game
 };
 
-// ---------- DAL ----------
+// Структуры in-memory:
+// game: { code, gmId, started, createdAt(ms), expiresAt(ms), locationId, players(Map userId->player), floor:[item], chat:[msg], locations: Map locId -> {id,name,desc,photoUrl}, }
+// player: { userId, name, avatar, hp, gold, inventory:[{id,name,type}] , joinedAt(ms) }
+// item: { id, name, type }
+// msg: { ts, userId, name, text }
+
+// ---------- Prisma DAL (если есть) ----------
+const prisma = (PrismaClient && process.env.DATABASE_URL) ? new PrismaClient() : null;
+
+// Небольшая прослойка DAL с одинаковыми методами для памяти и Prisma
 const DAL = {
-  // Создать игру
-async createGame(gmId) {
-  const now = new Date();
 
-  // In-memory режим
-  if (!prisma) {
-    let code;
-    for (let i = 0; i < 10; i++) {
-      const candidate = genCode();
-      if (!mem.games.has(candidate)) { code = candidate; break; }
+  // авто‑очистка старых игр
+  async cleanupExpired() {
+    if (!prisma) {
+      const now = nowTs();
+      for (const [code, g] of mem.games) {
+        if (g.expiresAt && g.expiresAt <= now) mem.games.delete(code);
+      }
+      return;
     }
-    if (!code) throw new Error("code generation failed");
-
-    mem.games.set(code, {
-      code,
-      gmId,
-      started: false,
-      createdAt: nowTs(),
-      expiresAt: nowTs() + SIX_HOURS_MS,
-      locationId: null,
-      players: new Map(),
-      floor: [],
-      chat: [],
-      locations: new Map(),
-    });
-    return { code };
-  }
-
-  // Prisma: ретрай при P2002 (уникальный код уже есть)
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const code = genCode();
     try {
-      const game = await prisma.game.create({
-        data: {
-          code,
-          gmId,
-          started: false,
-          createdAt: now,
-          lastActivity: now,
-          expiresAt: addMs(now, SIX_HOURS_MS),
-        },
-        select: { code: true },
+      await prisma.game.deleteMany({
+        where: { expiresAt: { lte: new Date() } }
       });
-      return game;
     } catch (e) {
-      if (e?.code === "P2002") continue; // коллизия — пробуем новый код
-      throw e; // другая ошибка — пробрасываем
+      console.error("cleanupExpired:", e.message);
     }
-  }
-  throw new Error("failed to create unique code");
-},
+  },
 
-  // Получить игру + проверить TTL
+  async touch(code) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (g) g.expiresAt = nowTs() + SIX_HOURS_MS;
+      return;
+    }
+    try {
+      await prisma.game.update({
+        where: { code },
+        data: { lastActivity: new Date(), expiresAt: addMs(new Date(), SIX_HOURS_MS) }
+      });
+    } catch (_) {}
+  },
+
+  // --- Game ---
+  async createGame(gmId) {
+    const now = new Date();
+
+    if (!prisma) {
+      // подобрать уникальный код
+      let code;
+      for (let i=0;i<10;i++) {
+        const cand = genCode();
+        if (!mem.games.has(cand)) { code = cand; break; }
+      }
+      if (!code) throw new Error("code generation failed");
+
+      mem.games.set(code, {
+        code,
+        gmId,
+        started: false,
+        createdAt: nowTs(),
+        expiresAt: nowTs() + SIX_HOURS_MS,
+        locationId: null,
+        players: new Map(),
+        floor: [],
+        chat: [],
+        locations: new Map(),
+      });
+      return { code };
+    }
+
+    // Prisma: ретрай при P2002 (unique violation)
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const code = genCode();
+      try {
+        const game = await prisma.game.create({
+          data: {
+            code, gmId,
+            started: false,
+            createdAt: now,
+            lastActivity: now,
+            expiresAt: addMs(now, SIX_HOURS_MS),
+          },
+          select: { code: true }
+        });
+        return game;
+      } catch (e) {
+        if (e?.code === "P2002") continue;
+        throw e;
+      }
+    }
+    throw new Error("failed to create unique code");
+  },
+
   async getGame(code) {
     if (!prisma) {
       const g = mem.games.get(code);
-      if (!g) return null;
-      if (g.expiresAt && g.expiresAt < nowTs()) {
-        mem.games.delete(code);
-        return null;
-      }
-      return g;
+      return g ? structuredClone(g) : null;
     }
-    const g = await prisma.game.findUnique({ where: { code } });
-    if (!g) return null;
-    if (g.expiresAt && new Date(g.expiresAt) < new Date()) {
-      await prisma.$transaction([
-        prisma.message.deleteMany({ where: { gameCode: code } }),
-        prisma.item.deleteMany({ where: { gameCode: code } }),
-        prisma.player.deleteMany({ where: { gameCode: code } }),
-        prisma.location.deleteMany({ where: { gameCode: code } }),
-        prisma.game.delete({ where: { code } }),
-      ]);
-      return null;
-    }
-    return g;
-  },
-
-  // Вступить в игру (создать/обновить игрока)
-  async joinGame({ code, userId, name, avatar }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      const p = g.players.get(userId);
-      if (!p) {
-        g.players.set(userId, {
-          userId,
-          name: name || "Hero",
-          avatar: avatar || null,
-          hp: 10,
-          gold: 0,
-          inventory: [],
-        });
-      } else {
-        if (name) p.name = name;
-        if (avatar) p.avatar = avatar;
-      }
-      return { ok: true };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-
-    await prisma.player.upsert({
-      where: { gameCode_userId: { gameCode: code, userId } },
-      update: { name, avatar },
-      create: { gameCode: code, userId, name: name || "Hero", avatar, hp: 10, gold: 0 },
-    });
-    await prisma.game.update({
+    const game = await prisma.game.findUnique({
       where: { code },
-      data: { lastActivity: new Date() },
-    });
-    return { ok: true };
-  },
-
-  // Список игроков
-  async listPlayers(code) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return [];
-      return Array.from(g.players.values());
-    }
-    return prisma.player.findMany({
-      where: { gameCode: code },
-      orderBy: { createdAt: "asc" },
-    });
-  },
-
-  // Выдать/отнять золото
-  async addGold({ code, userId, delta }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g || !g.players.has(userId)) return null;
-      const p = g.players.get(userId);
-      p.gold = Math.max(0, (p.gold || 0) + delta);
-      return { gold: p.gold };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const upd = await prisma.player.update({
-      where: { gameCode_userId: { gameCode: code, userId } },
-      data: { gold: { increment: delta } },
-      select: { gold: true },
-    });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return { gold: upd.gold };
-  },
-
-  // Выдать/отнять HP
-  async addHp({ code, userId, delta }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g || !g.players.has(userId)) return null;
-      const p = g.players.get(userId);
-      p.hp = Math.max(0, (p.hp || 0) + delta);
-      return { hp: p.hp };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const upd = await prisma.player.update({
-      where: { gameCode_userId: { gameCode: code, userId } },
-      data: { hp: { increment: delta } },
-      select: { hp: true },
-    });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return { hp: upd.hp };
-  },
-
-  // Выдать предмет игроку
-  async giveItemTo({ code, userId, itemName }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g || !g.players.has(userId)) return null;
-      const p = g.players.get(userId);
-      p.inventory.push({ id: "itm_" + nowTs(), name: itemName });
-      return true;
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const player = await prisma.player.findUnique({
-      where: { gameCode_userId: { gameCode: code, userId } },
-      select: { id: true },
-    });
-    await prisma.item.create({
-      data: { gameCode: code, name: itemName, type: "item", onFloor: false, ownerId: player?.id || null },
-    });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return true;
-  },
-
-  // Бросить предмет/золото на пол
-  async dropItem({ code, itemName }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      g.floor.push({ id: "f_" + nowTs(), name: itemName, type: "item" });
-      return true;
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    await prisma.item.create({ data: { gameCode: code, name: itemName, type: "item", onFloor: true } });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return true;
-  },
-  async dropGold({ code, amount }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      g.floor.push({ id: "g_" + nowTs(), type: "gold", name: "Gold", amount: Number(amount) || 1 });
-      return true;
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    await prisma.item.create({ data: { gameCode: code, name: "Gold", type: "gold", onFloor: true, amount: Number(amount) || 1 } });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return true;
-  },
-
-  // Поднять с пола (по одному)
-  async pickFromFloor({ code, userId }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return { picked: null };
-      const p = g.players.get(userId);
-      if (!p) return { picked: null };
-
-      const item = g.floor.shift() || null;
-      if (!item) return { picked: null, gold: p.gold, inventory: p.inventory };
-
-      if (item.type === "gold") {
-        p.gold = (p.gold || 0) + (item.amount || 1);
-        return { picked: { type: "gold", amount: item.amount }, gold: p.gold, inventory: p.inventory };
-      } else {
-        const invItem = { id: "itm_" + nowTs(), name: item.name };
-        p.inventory.push(invItem);
-        return { picked: { type: "item", name: item.name }, gold: p.gold, inventory: p.inventory };
+      include: {
+        players: true,
+        locations: true,
+        floorItems: true,
+        chat: { orderBy: { ts: 'asc' } }
       }
-    }
-    const g = await this.getGame(code);
-    if (!g) return { picked: null };
-    const first = await prisma.item.findFirst({
-      where: { gameCode: code, onFloor: true },
-      orderBy: { createdAt: "asc" },
     });
-    if (!first) return { picked: null };
-
-    if (first.type === "gold") {
-      await prisma.$transaction([
-        prisma.player.update({
-          where: { gameCode_userId: { gameCode: code, userId } },
-          data: { gold: { increment: first.amount || 1 } },
-        }),
-        prisma.item.delete({ where: { id: first.id } }),
-      ]);
-      const p = await prisma.player.findUnique({
-        where: { gameCode_userId: { gameCode: code, userId } },
-        select: { gold: true },
-      });
-      await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-      return { picked: { type: "gold", amount: first.amount || 1 }, gold: p?.gold || 0 };
-    } else {
-      const player = await prisma.player.findUnique({
-        where: { gameCode_userId: { gameCode: code, userId } },
-        select: { id: true },
-      });
-      await prisma.item.update({
-        where: { id: first.id },
-        data: { onFloor: false, ownerId: player?.id || null },
-      });
-      await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-      return { picked: { type: "item", name: first.name } };
-    }
-  },
-
-  // Локации
-  async addLocation({ code, title, description, imageUrl }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      const id = "loc_" + nowTs();
-      g.locations.set(id, { id, title, description: description || "", imageUrl: imageUrl || null });
-      return { id, title, description, imageUrl };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const loc = await prisma.location.create({
-      data: { gameCode: code, title, description: description || null, imageUrl: imageUrl || null },
-    });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return loc;
-  },
-  async setCurrentLocation({ code, locationId }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      g.locationId = locationId;
-      return { locationId };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    await prisma.game.update({ where: { code }, data: { locationId, lastActivity: new Date() } });
-    return { locationId };
-  },
-
-  // Запуск/остановка игры
-  async setStarted({ code, started }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      g.started = !!started;
-      return { started: g.started };
-    }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const upd = await prisma.game.update({
-      where: { code },
-      data: { started: !!started, lastActivity: new Date() },
-      select: { started: true },
-    });
-    return upd;
-  },
-
-  // Текущее состояние для фронта
-  async getState({ code, userId }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return null;
-      const me = g.players.get(userId);
-      const players = Array.from(g.players.values()).map(p => ({
-        userId: p.userId, name: p.name, avatar: p.avatar, hp: p.hp, gold: p.gold, invCount: (p.inventory || []).length
-      }));
-      const location = g.locationId ? g.locations.get(g.locationId) : null;
-      return {
-        code: g.code,
-        started: g.started,
-        isGM: userId === g.gmId,
-        me: me ? { userId: me.userId, name: me.name, avatar: me.avatar, hp: me.hp, gold: me.gold } : null,
-        players,
-        floorCount: g.floor.length,
-        myInventory: me?.inventory || [],
-        location,
-        avatars: AVATARS,
-      };
-    }
-
-    const g = await this.getGame(code);
-    if (!g) return null;
-
-    const [players, floorCount, me, myItems, location] = await Promise.all([
-      prisma.player.findMany({ where: { gameCode: code }, orderBy: { createdAt: "asc" } }),
-      prisma.item.count({ where: { gameCode: code, onFloor: true } }),
-      prisma.player.findUnique({ where: { gameCode_userId: { gameCode: code, userId } } }),
-      prisma.item.findMany({ where: { gameCode: code, owner: { gameCode: code, userId } } }),
-      g.locationId ? prisma.location.findUnique({ where: { id: g.locationId } }) : null,
-    ]);
-
+    if (!game) return null;
+    // приведение к in-memory форме наверх (минимум, что нужно фронту)
     return {
-      code: g.code,
-      started: g.started,
-      isGM: userId === g.gmId,
-      me: me ? { userId: me.userId, name: me.name, avatar: me.avatar, hp: me.hp, gold: me.gold } : null,
-      players: players.map(p => ({
-        userId: p.userId, name: p.name, avatar: p.avatar, hp: p.hp, gold: p.gold, invCount: 0
-      })),
-      floorCount,
-      myInventory: myItems.map(i => ({ id: i.id, name: i.name })),
-      location: location || null,
-      avatars: AVATARS,
+      code: game.code,
+      gmId: game.gmId,
+      started: game.started,
+      locationId: game.locationId,
+      players: new Map(game.players.map(p => [p.userId, {
+        userId: p.userId, name: p.name, avatar: p.avatar, hp: p.hp, gold: p.gold,
+        inventory: p.inventory ?? []
+      }])),
+      floor: game.floorItems ?? [],
+      chat: game.chat ?? [],
+      locations: new Map(game.locations.map(l => [l.id, { id:l.id, name:l.name, desc:l.desc, photoUrl:l.photoUrl }])),
     };
   },
 
-  // Чат
-  async sendChat({ code, userId, name, text }) {
-    const safeText = (text || "").toString().slice(0, 500);
+  async addPlayer(code, userId, name, avatar) {
     if (!prisma) {
       const g = mem.games.get(code);
-      if (!g) return null;
-      const msg = { id: "m_" + nowTs(), userId, name, text: safeText, ts: nowTs() };
-      g.chat.push(msg);
-      return msg;
+      if (!g) throw new Error("game_not_found");
+      if (!g.players.has(userId)) {
+        g.players.set(userId, { userId, name, avatar, hp: 10, gold: 0, inventory: [], joinedAt: nowTs() });
+      } else {
+        const p = g.players.get(userId);
+        p.name = name; p.avatar = avatar;
+      }
+      return g.players.get(userId);
     }
-    const g = await this.getGame(code);
-    if (!g) return null;
-    const msg = await prisma.message.create({
-      data: { gameCode: code, userId, name, text: safeText },
+    // upsert
+    const p = await prisma.player.upsert({
+      where: { gameCode_userId: { gameCode: code, userId } },
+      create: { gameCode: code, userId, name, avatar, hp: 10, gold: 0, inventory: [] },
+      update: { name, avatar }
     });
-    await prisma.game.update({ where: { code }, data: { lastActivity: new Date() } });
-    return { id: msg.id, userId: msg.userId, name: msg.name, text: msg.text, ts: msg.createdAt.getTime() };
+    return p;
   },
-  async listChat({ code, afterTs }) {
-    if (!prisma) {
-      const g = mem.games.get(code);
-      if (!g) return [];
-      return (g.chat || []).filter(m => !afterTs || m.ts > Number(afterTs));
-    }
+
+  async listPlayers(code) {
     const g = await this.getGame(code);
     if (!g) return [];
-    const msgs = await prisma.message.findMany({
-      where: { gameCode: code, ...(afterTs ? { createdAt: { gt: new Date(Number(afterTs)) } } : {}) },
-      orderBy: { createdAt: "asc" },
-    });
-    return msgs.map(m => ({ id: m.id, userId: m.userId, name: m.name, text: m.text, ts: m.createdAt.getTime() }));
+    return Array.from(g.players.values());
   },
+
+  async addGold(code, userId, delta) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      const p = g.players.get(userId);
+      if (!p) throw new Error("player_not_found");
+      p.gold = Math.max(0, (p.gold||0) + Number(delta||0));
+      return p.gold;
+    }
+    const p = await prisma.player.update({
+      where: { gameCode_userId: { gameCode: code, userId } },
+      data: { gold: { increment: Number(delta||0) } },
+      select: { gold: true }
+    });
+    return p.gold;
+  },
+
+  async addHp(code, userId, delta) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      const p = g.players.get(userId);
+      if (!p) throw new Error("player_not_found");
+      p.hp = Math.max(0, (p.hp||0) + Number(delta||0));
+      return p.hp;
+    }
+    const p = await prisma.player.update({
+      where: { gameCode_userId: { gameCode: code, userId } },
+      data: { hp: { increment: Number(delta||0) } },
+      select: { hp: true }
+    });
+    return p.hp;
+  },
+
+  async giveItemToPlayer(code, userId, itemName) {
+    const item = { id: "it_" + Math.random().toString(36).slice(2,9), name: itemName, type: "misc" };
+    if (!prisma) {
+      const g = mem.games.get(code);
+      const p = g?.players.get(userId);
+      if (!g || !p) throw new Error("not found");
+      p.inventory.push(item);
+      return item;
+    }
+    // упростим — храним инвентарь как JSON
+    const p = await prisma.player.update({
+      where: { gameCode_userId: { gameCode: code, userId } },
+      data: {
+        inventory: {
+          push: item
+        }
+      },
+      select: { inventory: true }
+    });
+    return item;
+  },
+
+  async dropItemToFloor(code, itemName) {
+    const item = { id: "it_" + Math.random().toString(36).slice(2,9), name: itemName, type: "misc" };
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      g.floor.push(item);
+      return item;
+    }
+    await prisma.floorItem.create({ data: { gameCode: code, id: item.id, name: item.name, type: item.type } });
+    return item;
+  },
+
+  async lookAround(code, userId) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      if (!g.floor.length) return null;
+      const item = g.floor.shift();
+      const p = g.players.get(userId);
+      if (!p) throw new Error("player_not_found");
+      p.inventory.push(item);
+      return item;
+    }
+    // В БД: взять первый предмет (по времени вставки), переложить игроку
+    const first = await prisma.floorItem.findFirst({
+      where: { gameCode: code },
+      orderBy: { createdAt: 'asc' }
+    });
+    if (!first) return null;
+    await prisma.floorItem.delete({ where: { id: first.id } });
+    await prisma.player.update({
+      where: { gameCode_userId: { gameCode: code, userId } },
+      data: { inventory: { push: { id: first.id, name: first.name, type: first.type } } }
+    });
+    return { id:first.id, name:first.name, type:first.type };
+  },
+
+  async addLocation(code, name, desc, photoUrl) {
+    const loc = { id: "loc_" + Math.random().toString(36).slice(2,8), name, desc, photoUrl: photoUrl || null };
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      g.locations.set(loc.id, loc);
+      return loc;
+    }
+    await prisma.location.create({ data: { gameCode: code, id: loc.id, name, desc, photoUrl: loc.photoUrl } });
+    return loc;
+  },
+
+  async setCurrentLocation(code, locId) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      g.locationId = locId;
+      return;
+    }
+    await prisma.game.update({ where:{ code }, data:{ locationId: locId } });
+  },
+
+  async startGame(code) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      g.started = true;
+      return;
+    }
+    await prisma.game.update({ where:{ code }, data:{ started: true } });
+  },
+
+  async addChat(code, userId, name, text) {
+    const m = { ts: new Date().toISOString(), userId, name, text };
+    if (!prisma) {
+      const g = mem.games.get(code);
+      if (!g) throw new Error("game_not_found");
+      g.chat.push(m);
+      return m;
+    }
+    await prisma.message.create({ data: { gameCode: code, ts: new Date(m.ts), userId, name, text } });
+    return m;
+  },
+
+  async getChat(code) {
+    if (!prisma) {
+      const g = mem.games.get(code);
+      return g ? (g.chat || []) : [];
+    }
+    const rows = await prisma.message.findMany({
+      where:{ gameCode: code },
+      orderBy:{ ts: 'asc' }
+    });
+    return rows.map(r => ({ ts:r.ts.toISOString(), userId:r.userId, name:r.name, text:r.text }));
+  }
 };
 
-// ---------- AUTO CLEANUP EXPIRED (каждые 10 мин) ----------
-if (prisma) {
-  setInterval(async () => {
+// периодически чистим игры
+setInterval(() => DAL.cleanupExpired().catch(()=>{}), 60 * 1000);
+
+// ---------- Telegram Bot ----------
+if (!BOT_TOKEN) {
+  console.warn("BOT_TOKEN is not set — бот не запускается.");
+}
+const bot = BOT_TOKEN ? new Telegraf(BOT_TOKEN) : null;
+
+// ждём коды join ровно от тех, кого попросили
+const pendingJoinUsers = new Set();
+
+if (bot) {
+  bot.start(async (ctx) => {
+    await ctx.reply("Dnd Mini App. Выбери действие:", Markup.inlineKeyboard([
+      [ Markup.button.webApp("Открыть мини‑апп", `${APP_URL}`) ]
+    ]));
+  });
+
+  bot.command("new", async (ctx) => {
+    const gmId = String(ctx.from.id);
     try {
-      const now = new Date();
-      const expired = await prisma.game.findMany({
-        where: { expiresAt: { lt: now } },
-        select: { code: true },
-      });
-      for (const g of expired) {
-        await prisma.$transaction([
-          prisma.message.deleteMany({ where: { gameCode: g.code } }),
-          prisma.item.deleteMany({ where: { gameCode: g.code } }),
-          prisma.player.deleteMany({ where: { gameCode: g.code } }),
-          prisma.location.deleteMany({ where: { gameCode: g.code } }),
-          prisma.game.delete({ where: { code: g.code } }),
-        ]);
-        console.log("🧹 removed expired game:", g.code);
-      }
+      const g = await DAL.createGame(gmId);
+      await ctx.reply(`Создана игра. Код: ${g.code}\nОткрой мини‑апп и продолжай.`, Markup.inlineKeyboard([
+        [ Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${g.code}`) ]
+      ]));
     } catch (e) {
-      console.log("cleanup error:", e?.message || e);
+      console.error("NEW failed:", e?.code, e?.message);
+      await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
     }
-  }, 10 * 60 * 1000);
+  });
+
+  bot.command("join", async (ctx) => {
+    const uid = String(ctx.from.id);
+    pendingJoinUsers.add(uid);
+    await ctx.reply("Введи код комнаты (6 символов):");
+  });
+
+  bot.on("text", async (ctx) => {
+    const uid = String(ctx.from.id);
+    if (!pendingJoinUsers.has(uid)) return;
+    const code = (ctx.message.text || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) {
+      await ctx.reply("Код должен быть 6 символов (латиница/цифры). Попробуй ещё раз.");
+      return;
+    }
+    pendingJoinUsers.delete(uid);
+    await ctx.reply(`Код принят: ${code}. Открой мини‑апп и войди в лобби.`, Markup.inlineKeyboard([
+      [ Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${code}`) ]
+    ]));
+  });
+
+  // webhook
+  app.use(bot.webhookCallback(`/telegraf/${BOT_SECRET}`));
 }
 
-// ---------- API ----------
-app.get("/healthz", (req, res) => res.json({ ok: true }));
+// ---------- API для мини‑аппы ----------
 
-// создать новую игру (GM)
-app.post("/api/game/new", async (req, res) => {
+// состояние игры/роли
+app.get("/api/game/:code/state", async (req, res) => {
   try {
-    const gmId = (req.body?.gmId || "").toString();
-    if (!gmId) return res.status(400).json({ error: "gmId required" });
-    const game = await DAL.createGame(gmId);
-    res.json({ code: game.code });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
+    const { code } = req.params;
+    const userId = String(req.query.userId || "");
+    const game = await DAL.getGame(code);
+    if (!game) return err(res, "game_not_found");
 
-// войти в игру
-app.post("/api/game/join", async (req, res) => {
-  try {
-    const { code, userId, name, avatar } = req.body || {};
-    if (!code || !userId) return res.status(400).json({ error: "code & userId required" });
-    const ok = await DAL.joinGame({ code, userId, name, avatar });
-    if (!ok) return res.status(404).json({ error: "game not found" });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
+    const isGM = userId && userId === String(game.gmId);
+    const p = userId ? Array.from(game.players.values()).find(x => x.userId === userId) : null;
 
-// запустить игру
-app.post("/api/game/start", async (req, res) => {
-  try {
-    const { code, started } = req.body || {};
-    const g = await DAL.setStarted({ code, started: !!started });
-    if (!g) return res.status(404).json({ error: "game not found" });
-    res.json(g);
+    ok(res, {
+      game: {
+        code: game.code,
+        started: game.started,
+        locationId: game.locationId,
+        players: Array.from(game.players.values()).map(p => ({ userId:p.userId, name:p.name, avatar:p.avatar, hp:p.hp, gold:p.gold })),
+        floor: game.floor,
+        locations: Array.from(game.locations.values()),
+      },
+      me: p || null,
+      role: isGM ? "gm" : (p ? "player" : "guest")
+    });
   } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
+    err(res, e.message);
   }
 });
 
-// состояние
-app.get("/api/state", async (req, res) => {
+// вход в лобби
+app.post("/api/lobby/join", async (req, res) => {
   try {
-    const code = (req.query.code || "").toString();
-    const userId = (req.query.userId || "").toString();
-    if (!code || !userId) return res.status(400).json({ error: "code & userId required" });
-    const state = await DAL.getState({ code, userId });
-    if (!state) return res.status(404).json({ error: "not found" });
-    res.json(state);
+    const { code, userId, name, avatar } = req.body;
+    if (!code || !userId || !name) return err(res, "bad_request");
+    const g = await DAL.getGame(code);
+    if (!g) return err(res, "game_not_found");
+    const p = await DAL.addPlayer(code, String(userId), String(name).slice(0,32), String(avatar||""));
+    await DAL.touch(code);
+    ok(res, { player: p });
   } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-
-// gold/hp
-app.post("/api/player/gold", async (req, res) => {
-  try {
-    const { code, userId, delta } = req.body || {};
-    const r = await DAL.addGold({ code, userId, delta: Number(delta) || 0 });
-    if (!r) return res.status(404).json({ error: "not found" });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-app.post("/api/player/hp", async (req, res) => {
-  try {
-    const { code, userId, delta } = req.body || {};
-    const r = await DAL.addHp({ code, userId, delta: Number(delta) || 0 });
-    if (!r) return res.status(404).json({ error: "not found" });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-
-// предметы
-app.post("/api/item/give", async (req, res) => {
-  try {
-    const { code, userId, name } = req.body || {};
-    const ok = await DAL.giveItemTo({ code, userId, itemName: name });
-    if (!ok) return res.status(404).json({ error: "not found" });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-
-app.post("/api/item/drop", async (req, res) => {
-  try {
-    const { code, name } = req.body || {};
-    const ok = await DAL.dropItem({ code, itemName: name });
-    if (!ok) return res.status(404).json({ error: "not found" });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-app.post("/api/gold/drop", async (req, res) => {
-  try {
-    const { code, amount } = req.body || {};
-    const ok = await DAL.dropGold({ code, amount: Number(amount) || 1 });
-    if (!ok) return res.status(404).json({ error: "not found" });
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-
-app.post("/api/floor/pick", async (req, res) => {
-  try {
-    const { code, userId } = req.body || {};
-    const r = await DAL.pickFromFloor({ code, userId });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-
-// локации
-app.post("/api/location/add", async (req, res) => {
-  try {
-    const { code, title, description, imageUrl } = req.body || {};
-    const r = await DAL.addLocation({ code, title, description, imageUrl });
-    if (!r) return res.status(404).json({ error: "not found" });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
-app.post("/api/location/set", async (req, res) => {
-  try {
-    const { code, locationId } = req.body || {};
-    const r = await DAL.setCurrentLocation({ code, locationId });
-    if (!r) return res.status(404).json({ error: "not found" });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
+    err(res, e.message);
   }
 });
 
 // чат
-app.post("/api/chat/send", async (req, res) => {
-  try {
-    const { code, userId, name, text } = req.body || {};
-    const r = await DAL.sendChat({ code, userId, name, text });
-    if (!r) return res.status(404).json({ error: "not found" });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
-});
 app.get("/api/chat", async (req, res) => {
   try {
-    const code = (req.query.code || "").toString();
-    const afterTs = req.query.afterTs ? Number(req.query.afterTs) : undefined;
-    const r = await DAL.listChat({ code, afterTs });
-    res.json(r);
-  } catch (e) {
-    res.status(500).json({ error: e?.message || "failed" });
-  }
+    const { code } = req.query;
+    const list = await DAL.getChat(String(code));
+    ok(res, { list });
+  } catch (e) { err(res, e.message); }
 });
 
-// ---------- TELEGRAM BOT (Telegraf, webhook) ----------
-let bot = null;
-if (BOT_TOKEN) {
-  bot = new Telegraf(BOT_TOKEN);
-
-  bot.start(async (ctx) => {
-    const kb = Markup.inlineKeyboard([
-      [Markup.button.webApp("Открыть мини‑апп", `${APP_URL}`)],
-    ]);
-    await ctx.reply("Dnd Mini App. Выбери действие:", kb);
-  });
-
- bot.command("new", async (ctx) => {
-  const gmId = String(ctx.from.id);
+app.post("/api/chat", async (req, res) => {
   try {
-    const g = await DAL.createGame(gmId);
-    await ctx.reply(`Создана игра. Код: ${g.code}\nОткрой мини‑апп и продолжай.`);
-  } catch (e) {
-    console.error("NEW failed:", e?.code, e?.message);
-    await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
-  }
+    const { code, userId, name, text } = req.body;
+    const m = await DAL.addChat(code, String(userId), String(name), String(text||""));
+    ok(res, { message: m });
+  } catch (e) { err(res, e.message); }
 });
 
-  bot.command("join", async (ctx) => {
-  const uid = String(ctx.from.id);
-  pendingJoinUsers.add(uid);
-  await ctx.reply("Введи код комнаты (6 символов):");
+// GM: золото/хп
+app.post("/api/gm/gold", async (req,res) => {
+  try {
+    const { code, userId, delta } = req.body;
+    const val = await DAL.addGold(code, String(userId), Number(delta||0));
+    ok(res, { gold: val });
+  } catch (e) { err(res, e.message); }
 });
-    bot.on("text", async (inner) => {
-      const code = (inner.message.text || "").trim().toUpperCase();
-      if (!/^[A-Z0-9]{6}$/.test(code)) return;
-      await inner.reply(`Код принят: ${code}. Открой мини‑апп и войди в лобби.`);
-    });
-  });
-bot.on("text", async (ctx) => {
-  const uid = String(ctx.from.id);
-  if (!pendingJoinUsers.has(uid)) return; // не ждём — игнор
-  const code = (ctx.message.text || "").trim().toUpperCase();
-  if (!/^[A-Z0-9]{6}$/.test(code)) {
-    await ctx.reply("Код должен быть 6 символов (латиница/цифры). Попробуй ещё раз.");
-    return;
-  }
-  pendingJoinUsers.delete(uid);
-  await ctx.reply(`Код принят: ${code}. Открой мини‑апп и войди в лобби.`);
+app.post("/api/gm/hp", async (req,res) => {
+  try {
+    const { code, userId, delta } = req.body;
+    const val = await DAL.addHp(code, String(userId), Number(delta||0));
+    ok(res, { hp: val });
+  } catch (e) { err(res, e.message); }
 });
 
-  app.use(bot.webhookCallback(`/telegraf/${BOT_SECRET_PATH}`));
-  const hookUrl = `${APP_URL}/telegraf/${BOT_SECRET_PATH}`;
-  bot.telegram.setWebhook(hookUrl).then(() => {
-    console.log("🔗 Webhook set:", hookUrl);
-  }).catch(e => {
-    console.log("Webhook error:", e?.message || e);
-  });
-} else {
-  console.log("⚠️ BOT_TOKEN not set — бот отключён");
-}
+// GM: предметы
+app.post("/api/gm/give-item", async (req,res) => {
+  try {
+    const { code, userId, name } = req.body;
+    const item = await DAL.giveItemToPlayer(code, String(userId), String(name));
+    ok(res, { item });
+  } catch (e) { err(res, e.message); }
+});
+app.post("/api/gm/drop-item", async (req,res) => {
+  try {
+    const { code, name } = req.body;
+    const item = await DAL.dropItemToFloor(code, String(name));
+    ok(res, { item });
+  } catch (e) { err(res, e.message); }
+});
 
-// ---------- START ----------
-app.listen(PORT, () => {
+// игрок: осмотреться — забрать 1 предмет с пола
+app.post("/api/player/look-around", async (req,res) => {
+  try {
+    const { code, userId } = req.body;
+    const item = await DAL.lookAround(code, String(userId));
+    ok(res, { item }); // может быть null — тогда «пусто»
+  } catch (e) { err(res, e.message); }
+});
+
+// локации
+app.post("/api/gm/location/add", async (req,res) => {
+  try {
+    const { code, name, desc, photoUrl } = req.body;
+    const loc = await DAL.addLocation(code, String(name), String(desc||""), String(photoUrl||""));
+    ok(res, { location: loc });
+  } catch (e) { err(res, e.message); }
+});
+app.post("/api/gm/location/set", async (req,res) => {
+  try {
+    const { code, locId } = req.body;
+    await DAL.setCurrentLocation(code, String(locId));
+    ok(res);
+  } catch (e) { err(res, e.message); }
+});
+app.post("/api/gm/start", async (req,res) => {
+  try {
+    const { code } = req.body;
+    await DAL.startGame(code);
+    ok(res);
+  } catch (e) { err(res, e.message); }
+});
+
+// ---------- Start ----------
+app.listen(PORT, async () => {
   console.log(`🌐 Web server on ${PORT}`);
+  if (bot) {
+    const hook = `${APP_URL}/telegraf/${BOT_SECRET}`;
+    try {
+      await bot.telegram.setWebhook(hook);
+      console.log("🔗 Webhook set:", hook);
+    } catch (e) {
+      console.error("Webhook error:", e.message);
+    }
+  }
 });
