@@ -4,12 +4,10 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
-    "build": "echo \"No build step required\"",
-    "prisma:gen": "prisma generate",
-    "prisma:push": "prisma db push"
-  },
+  "start": "node server.js",
+  "dev": "nodemon server.js",
+  "build": "prisma generate && echo 'Build complete'"
+},
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "axios": "^1.7.2",
