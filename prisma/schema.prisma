@@ -7,29 +7,47 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ===== Game =====
 model Game {
-  id         BigInt   @id @default(autoincrement())
-  code       String   @unique
-  gmId       String
-  title      String?
-  started    Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
+  id        Int       @id @default(autoincrement())
+  code      String    @unique
+  gmId      String
+  title     String?
+  started   Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime  @default(dbgenerated("(now() + interval '6 hours')"))
 
-  players    Player[]
-  locations  Location[]
+  players   Player[]
+  locations Location[]
+  items     Item[]
+  rolls     Roll[]
+  messages  Message[]
+}
+
+model Player {
+  id         Int       @id @default(autoincrement())
+  gameId     Int
+  tgId       String
+  name       String
+  avatar     String?
+  hp         Int       @default(10)
+  gold       Int       @default(0)
+  isGM       Boolean   @default(false)
+  locationId Int?
+
+  game       Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  location   Location? @relation(fields: [locationId], references: [id])
   items      Item[]
   messages   Message[]
   rolls      Roll[]
 
-  @@index([code])
+  createdAt  DateTime  @default(now())
+
+  @@unique([gameId, tgId])
 }
 
-// ===== Location =====
 model Location {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
+  id        Int      @id @default(autoincrement())
+  gameId    Int
   name      String
   descr     String?
   imageUrl  String?
@@ -38,82 +56,43 @@ model Location {
   game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
   players   Player[]
   items     Item[]
-
-  @@index([gameId])
 }
 
-// ===== Player =====
-model Player {
-  id         BigInt   @id @default(autoincrement())
-  gameId     BigInt
-  tgId       String
-  name       String
-  avatar     String?
-  hp         Int      @default(10)
-  gold       Int      @default(0)
-  isGM       Boolean  @default(false)
-  locationId BigInt?
-  createdAt  DateTime @default(now())
-
-  game       Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  location   Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
-
-  items      Item[]
-  messages   Message[]
-  rolls      Roll[]
-
-  @@unique([gameId, tgId])
-  @@index([gameId])
-  @@index([locationId])
-}
-
-// ===== Item =====
 model Item {
-  id            BigInt   @id @default(autoincrement())
-  gameId        BigInt
-  ownerPlayerId BigInt?
-  onFloor       Boolean  @default(false)
-  locationId    BigInt?
-  name          String
-  qty           Int      @default(1)
-  type          String   @default("misc")
-  note          String?
-  createdAt     DateTime @default(now())
-
-  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  owner     Player?   @relation(fields: [ownerPlayerId], references: [id], onDelete: SetNull)
-  location  Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
-
-  @@index([gameId])
-  @@index([ownerPlayerId])
-  @@index([locationId])
-}
-
-// ===== Message =====
-model Message {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
-  authorId  BigInt?
-  text      String
+  id        Int      @id @default(autoincrement())
+  gameId    Int
+  ownerId   Int?
+  onFloor   Boolean  @default(false)
+  locationId Int?
+  name      String
+  qty       Int      @default(1)
+  type      String   @default("misc")
   createdAt DateTime @default(now())
 
-  game     Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  author   Player? @relation(fields: [authorId], references: [id], onDelete: SetNull)
-
-  @@index([gameId])
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  owner     Player?  @relation(fields: [ownerId], references: [id])
+  location  Location? @relation(fields: [locationId], references: [id])
 }
 
-// ===== Roll =====
+model Message {
+  id        Int      @id @default(autoincrement())
+  gameId    Int
+  authorId  Int?
+  text      String
+  at        DateTime @default(now())
+
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  author    Player?  @relation(fields: [authorId], references: [id])
+}
+
 model Roll {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
-  playerId  BigInt
+  id        Int      @id @default(autoincrement())
+  gameId    Int
+  playerId  Int?
   die       Int
   result    Int
-  createdAt DateTime @default(now())
+  at        DateTime @default(now())
 
-  game    Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  player  Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
-
-  @@index([gameId])
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  player    Player?  @relation(fields: [playerId], references: [id])
 }
