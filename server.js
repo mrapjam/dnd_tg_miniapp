@@ -32,22 +32,24 @@ const WEB_DIR = path.join(__dirname, "webapp");
 app.use("/assets", express.static(path.join(WEB_DIR, "assets")));
 app.get("/", (_req, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
 
-/* -------------------- PRISMA (ленивое подключение) + IN-MEMORY -------------------- */
+/* -------------------- PRISMA (ленивое подключение, безопасно) -------------------- */
 let prisma = null;
-(async () => {
+async function tryConnectPrisma() {
   try {
-    prisma = new PrismaClient();
-    await prisma.$connect();
+    const p = new PrismaClient();
+    await p.$connect();
+    prisma = p;
     console.log("✅ Prisma connected");
   } catch (e) {
     prisma = null;
-    console.warn("⚠️ Prisma unavailable, memory fallback:", e?.code || e?.message);
+    console.warn("⚠️ Prisma unavailable, using in‑memory:", e?.code || e?.message);
   }
-})();
+}
+await tryConnectPrisma();
 
-// Память (резерв)
+/* -------------------- IN-MEMORY FALLBACK -------------------- */
 const mem = {
-  games: new Map(), // code -> { code, gmId, started, createdAt, expiresAt, players(Map), messages([]) }
+  games: new Map(),
 };
 
 const nowTs = () => Date.now();
@@ -55,13 +57,26 @@ const addMs = (d, ms) => new Date(d.getTime() + ms);
 const genCode = () =>
   Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(2, 8).padEnd(6, "0");
 
-/* -------------------- DAL (DB + fallback memory) -------------------- */
+/* -------------------- DAL -------------------- */
 const DAL = {
-  // Создать игру (устойчиво: БД -> при ошибке память)
+  ensureMemGame(code, patch = {}) {
+    if (!mem.games.has(code)) {
+      mem.games.set(code, {
+        code,
+        gmId: patch.gmId || "0",
+        started: patch.started ?? false,
+        createdAt: patch.createdAt ? +patch.createdAt : nowTs(),
+        expiresAt: patch.expiresAt ? +patch.expiresAt : nowTs() + SIX_HOURS_MS,
+        players: new Map(),
+        messages: [],
+      });
+    }
+    return mem.games.get(code);
+  },
+
   async createGame(gmId) {
     const now = new Date();
 
-    // Если базы нет — сразу в память
     if (!prisma) {
       let code = genCode();
       while (mem.games.has(code)) code = genCode();
@@ -77,7 +92,6 @@ const DAL = {
       return { code, storage: "memory" };
     }
 
-    // Пробуем до 10 раз (на случай коллизий кода)
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = genCode();
       try {
@@ -94,9 +108,8 @@ const DAL = {
         });
         return { code: game.code, storage: "db" };
       } catch (e) {
-        if (e?.code === "P2002") continue; // уникальный код занят — пробуем другой
-        // Любая другая ошибка БД — создаём в памяти
-        console.warn("DB down, fallback to memory for /new:", e?.code || e?.message);
+        if (e?.code === "P2002") continue; // коллизия кода — пробуем ещё
+        console.warn("DB error on /new, fallback to memory:", e?.code || e?.message);
         mem.games.set(code, {
           code,
           gmId,
@@ -112,11 +125,9 @@ const DAL = {
     throw new Error("FAILED_UNIQUE_CODE");
   },
 
-  // Получить игру по коду
   async getGame(code) {
     if (!code) return null;
 
-    // Память
     if (mem.games.has(code)) {
       const g = mem.games.get(code);
       return {
@@ -136,40 +147,60 @@ const DAL = {
       };
     }
 
-    // База
     if (!prisma) return null;
-    const g = await prisma.game.findUnique({
-      where: { code },
-      include: { players: true, messages: true },
-    });
-    if (!g) return null;
-    return { ...g, storage: "db" };
+
+    try {
+      const g = await prisma.game.findUnique({
+        where: { code },
+        include: { players: true, messages: true },
+      });
+      if (!g) return null;
+      return { ...g, storage: "db" };
+    } catch (e) {
+      console.warn("getGame DB error, try fallback to memory:", e?.code || e?.message);
+      return mem.games.has(code) ? await this.getGame(code) : null;
+    }
   },
 
-  // Вход в лобби (создаёт Player)
   async joinLobby(code, { name, avatar }) {
-    const game = await this.getGame(code);
+    const codeU = String(code).toUpperCase();
+    let game = await this.getGame(codeU);
     if (!game) throw new Error("GAME_NOT_FOUND");
 
+    // Путь через память
     if (game.storage === "memory") {
       const pid = `p_${Math.random().toString(36).slice(2)}`;
-      const g = mem.games.get(code);
+      const g = mem.games.get(codeU);
       g.players.set(pid, { name, avatar, joinedAt: nowTs() });
-      return { id: pid, name, avatar };
+      return { id: pid, name, avatar, storage: "memory" };
     }
 
-    const player = await prisma.player.create({
-      data: { name, avatar, gameId: game.id },
-      select: { id: true, name: true, avatar: true },
-    });
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { lastActivity: new Date() },
-    });
-    return player;
+    // Путь через БД (с защитой + fallback в память)
+    try {
+      const player = await prisma.player.create({
+        data: { name, avatar, gameId: game.id },
+        select: { id: true, name: true, avatar: true },
+      });
+      await prisma.game.update({
+        where: { id: game.id },
+        data: { lastActivity: new Date() },
+      });
+      return { ...player, storage: "db" };
+    } catch (e) {
+      console.warn("joinLobby DB error, fallback to memory:", e?.code || e?.message);
+      // Конвертируем игру в памяти и пускаем игрока
+      const gmem = this.ensureMemGame(codeU, {
+        gmId: game.gmId || "0",
+        started: game.started,
+        createdAt: game.createdAt,
+        expiresAt: game.expiresAt,
+      });
+      const pid = `p_${Math.random().toString(36).slice(2)}`;
+      gmem.players.set(pid, { name, avatar, joinedAt: nowTs() });
+      return { id: pid, name, avatar, storage: "memory-fallback" };
+    }
   },
 
-  // Сообщение в чат
   async addMessage(code, text) {
     const game = await this.getGame(code);
     if (!game) throw new Error("GAME_NOT_FOUND");
@@ -179,23 +210,33 @@ const DAL = {
       return;
     }
 
-    await prisma.message.create({ data: { text, gameId: game.id } });
-    await prisma.game.update({
-      where: { id: game.id },
-      data: { lastActivity: new Date() },
-    });
+    try {
+      await prisma.message.create({ data: { text, gameId: game.id } });
+      await prisma.game.update({
+        where: { id: game.id },
+        data: { lastActivity: new Date() },
+      });
+    } catch (e) {
+      console.warn("addMessage DB error, fallback to memory:", e?.code || e?.message);
+      const gmem = this.ensureMemGame(game.code, {
+        gmId: game.gmId || "0",
+        started: game.started,
+        createdAt: game.createdAt,
+        expiresAt: game.expiresAt,
+      });
+      gmem.messages.push({ text, createdAt: nowTs() });
+    }
   },
 
-  // Очистка просроченных
   async cleanupExpired() {
     const now = new Date();
 
-    // Память
+    // память
     for (const [code, g] of mem.games.entries()) {
       if (g.expiresAt <= nowTs()) mem.games.delete(code);
     }
 
-    // База
+    // база
     if (prisma) {
       try {
         await prisma.message.deleteMany({ where: { game: { expiresAt: { lt: now } } } });
@@ -208,7 +249,21 @@ const DAL = {
   },
 };
 
-/* -------------------- API для мини‑аппы -------------------- */
+/* -------------------- API -------------------- */
+
+// Диагностика (поможет быстро понять, почему «не входит»)
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    prisma: !!prisma,
+    memGames: mem.games.size,
+    env: {
+      PORT,
+      APP_URL,
+      hasBotToken: !!BOT_TOKEN,
+    },
+  });
+});
 
 // Получить состояние игры
 app.get("/api/game", async (req, res) => {
@@ -218,22 +273,46 @@ app.get("/api/game", async (req, res) => {
     if (!game) return res.status(404).json({ ok: false, error: "GAME_NOT_FOUND" });
     res.json({ ok: true, game });
   } catch (e) {
+    console.error("GET /api/game error:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// Войти в лобби (создать игрока)
+// Войти в лобби
 app.post("/api/lobby/join", async (req, res) => {
   try {
     const { code, name, avatar } = req.body || {};
-    if (!code || !name) return res.status(400).json({ ok: false, error: "BAD_INPUT" });
-    const player = await DAL.joinLobby(String(code).toUpperCase(), {
-      name: String(name).slice(0, 32),
-      avatar: String(avatar || "🛡️"),
+    if (!code || !name) {
+      return res.status(400).json({ ok: false, error: "BAD_INPUT" });
+    }
+    const sanitized = {
+      code: String(code).toUpperCase(),
+      name: String(name).trim().slice(0, 32) || "Hero",
+      avatar: String(avatar || "🛡️").slice(0, 8),
+    };
+
+    const player = await DAL.joinLobby(sanitized.code, {
+      name: sanitized.name,
+      avatar: sanitized.avatar,
     });
     res.json({ ok: true, player });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    console.error("POST /api/lobby/join error:", e);
+    // Последний шанс — полностью в память
+    try {
+      const code = String((req.body?.code || "")).toUpperCase();
+      if (!code) throw e;
+      DAL.ensureMemGame(code);
+      const pid = `p_${Math.random().toString(36).slice(2)}`;
+      mem.games.get(code).players.set(pid, {
+        name: (req.body?.name || "Hero").toString().slice(0, 32),
+        avatar: (req.body?.avatar || "🛡️").toString().slice(0, 8),
+        joinedAt: nowTs(),
+      });
+      return res.json({ ok: true, player: { id: pid, name: req.body?.name || "Hero" } });
+    } catch {
+      return res.status(500).json({ ok: false, error: "JOIN_FAILED" });
+    }
   }
 });
 
@@ -245,6 +324,7 @@ app.post("/api/chat/send", async (req, res) => {
     await DAL.addMessage(String(code).toUpperCase(), String(text).slice(0, 300));
     res.json({ ok: true });
   } catch (e) {
+    console.error("POST /api/chat/send error:", e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
@@ -255,7 +335,6 @@ let bot = null;
 if (BOT_TOKEN) {
   bot = new Telegraf(BOT_TOKEN);
 
-  // /start
   bot.start(async (ctx) => {
     await ctx.reply(
       "Dnd Mini App. Выбери действие:",
@@ -263,7 +342,6 @@ if (BOT_TOKEN) {
     );
   });
 
-  // /new — создать игру (устойчиво)
   bot.command("new", async (ctx) => {
     const gmId = String(ctx.from.id);
     try {
@@ -282,7 +360,6 @@ if (BOT_TOKEN) {
     }
   });
 
-  // /join — спросить код и выдать кнопку mini‑app
   bot.command("join", async (ctx) => {
     await ctx.reply("Введи код комнаты (6 символов):");
     bot.once("text", async (ctx2) => {
@@ -304,7 +381,7 @@ if (BOT_TOKEN) {
     .then(() => console.log("🔗 Webhook set:", `${APP_URL}/telegraf/${BOT_SECRET_PATH}`))
     .catch((e) => console.warn("Webhook error:", e.message));
 } else {
-  console.warn("⚠️ BOT_TOKEN не задан — Telegram‑бот не будет активен");
+  console.warn("⚠️ BOT_TOKEN не задан — Telegram‑бот не активен");
 }
 
 /* -------------------- SERVER + CRON -------------------- */
@@ -312,7 +389,6 @@ app.listen(PORT, () => {
   console.log(`🌐 Web server on ${PORT}`);
 });
 
-// чистим истёкшие игры раз в минуту
 setInterval(() => {
   DAL.cleanupExpired().catch((e) => console.warn("cleanup error:", e?.message));
 }, 60 * 1000);
