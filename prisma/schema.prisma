@@ -1,5 +1,4 @@
 // prisma/schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -21,8 +20,10 @@ model Game {
   gmId      String
   started   Boolean  @default(false)
   createdAt DateTime @default(now())
+  // истекает через 6 часов
   expiresAt DateTime @default(dbgenerated("now() + interval '6 hours'")) @db.Timestamptz(6)
 
+  // текущая локация (опционально)
   currentLocationId String?
   currentLocation   Location? @relation("GameCurrentLocation", fields: [currentLocationId], references: [id])
 
@@ -43,15 +44,16 @@ model Player {
   tgId      String
   name      String
   avatar    String?
-  role      Role      @default(PLAYER)
+  role      Role     @default(PLAYER)
 
-  hp        Int       @default(10)
-  gold      Int       @default(0)
+  hp        Int      @default(10)
+  gold      Int      @default(0)
 
+  // где сейчас игрок
   currentLocationId String?  @db.Uuid
   currentLocation   Location? @relation("PlayerCurrentLocation", fields: [currentLocationId], references: [id])
 
-  // Владеемые предметы (ответная сторона к Item.owner)
+  // его предметы (ответная сторона к Item.owner)
   items     Item[]   @relation("PlayerItems")
 
   messages  Message[]
@@ -88,11 +90,11 @@ model Item {
   name      String
   descr     String?
 
-  // Владелец (игрок)
+  // владелец (игрок), опционально
   ownerId   String?  @db.Uuid
   owner     Player?  @relation("PlayerItems", fields: [ownerId], references: [id])
 
-  // Локация
+  // локация, опционально
   locationId String?  @db.Uuid
   location   Location? @relation("LocationItems", fields: [locationId], references: [id])
 
