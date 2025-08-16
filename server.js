@@ -1,266 +1,126 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import { Telegraf, Markup } from 'telegraf';
-import { PrismaClient } from '@prisma/client';
+// server.js
+import express from "express";
+import bodyParser from "body-parser";
+import { PrismaClient } from "@prisma/client";
+import { Telegraf } from "telegraf";
 
-dotenv.config();
-
-// ===== ENV =====
-const PORT = process.env.PORT || 10000;
-const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || 'telegraf-9f2c1a';
-
-if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is not set'); process.exit(1);
-}
-
-// ===== Prisma =====
-const prisma = new PrismaClient();
-const asNum = (v) => (typeof v === 'bigint' ? Number(v) : v);
-const code6 = () => Math.random().toString(36).slice(2, 8).toUpperCase();
-const addHours = (h) => new Date(Date.now() + h * 3600 * 1000);
-
-// ===== Express =====
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+const prisma = new PrismaClient();
 
-// статика мини‑аппы
-app.use(express.static('webapp'));
+app.use(bodyParser.json());
+app.use(express.static("webapp"));
 
-// health
-app.get('/healthz', (_req, res) => res.send('ok'));
+// =============== TELEGRAM BOT ===============
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// TTL cleaner
-setInterval(async () => {
-  try {
-    const r = await prisma.game.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-    if (r.count) console.log('🧹 cleanupExpired:', r.count);
-  } catch (e) {
-    console.log('cleanupExpired error:', e.message || e);
-  }
-}, 60_000);
-
-// ===== API: STATE =====
-app.get('/api/state', async (req, res) => {
-  try {
-    const code = String(req.query.code || '').toUpperCase();
-    const me = req.query.me ? String(req.query.me) : null;
-    if (!code) return res.json({ ok: true, exists: false });
-
-    const game = await prisma.game.findUnique({
-      where: { code },
-      include: { players: { orderBy: { createdAt: 'asc' } } }
-    });
-    if (!game) return res.json({ ok: true, exists: false });
-
-    const players = game.players.map(p => ({
-      id: asNum(p.id), tgId: p.tgId, name: p.name, avatar: p.avatar,
-      hp: p.hp, gold: p.gold, isGM: p.isGM,
-      locationId: p.locationId ? asNum(p.locationId) : null,
-      createdAt: p.createdAt
-    }));
-    const you = me ? players.find(p => p.tgId === me) : null;
-
-    res.json({
-      ok: true, exists: true,
-      code: game.code, gmId: game.gmId, started: game.started, expiresAt: game.expiresAt,
-      you, players
-    });
-  } catch (e) {
-    console.error('GET /api/state error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ===== API: LOBBY JOIN =====
-app.post('/api/lobby/join', async (req, res) => {
-  try {
-    const { code, tgId, name, avatar } = req.body || {};
-    if (!code || !tgId || !name) return res.status(400).json({ ok: false, error: 'BAD_PAYLOAD' });
-
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-
-    const player = await prisma.player.upsert({
-      where: { gameId_tgId: { gameId: game.id, tgId: String(tgId) } },
-      update: { name: String(name).slice(0, 64), avatar: avatar ? String(avatar).slice(0, 32) : null },
-      create: { gameId: game.id, tgId: String(tgId), name: String(name).slice(0, 64), avatar: avatar ? String(avatar).slice(0, 32) : null }
-    });
-
-    res.json({ ok: true, player: {
-      id: asNum(player.id), tgId: player.tgId, name: player.name, avatar: player.avatar,
-      hp: player.hp, gold: player.gold, isGM: player.isGM
-    }});
-  } catch (e) {
-    console.error('POST /api/lobby/join error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ===== GM API =====
-app.get('/api/gm/players', async (req, res) => {
-  try {
-    const code = String(req.query.code || '').toUpperCase();
-    const me = String(req.query.me || '');
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== me) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const players = await prisma.player.findMany({ where: { gameId: game.id }, orderBy: { createdAt: 'asc' } });
-    res.json({ ok: true, players: players.map(p => ({
-      id: asNum(p.id), name: p.name, tgId: p.tgId, avatar: p.avatar, gold: p.gold, hp: p.hp, isGM: p.isGM
-    })) });
-  } catch (e) {
-    console.error('GET /api/gm/players error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-app.post('/api/gm/grant-gold', async (req, res) => {
-  try {
-    const { code, me, playerId, delta } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== String(me)) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const p = await prisma.player.update({
-      where: { id: BigInt(playerId) },
-      data: { gold: { increment: Number(delta || 0) } }
-    });
-    res.json({ ok: true, gold: p.gold });
-  } catch (e) {
-    console.error('POST /api/gm/grant-gold error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-app.post('/api/gm/grant-hp', async (req, res) => {
-  try {
-    const { code, me, playerId, delta } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== String(me)) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const p = await prisma.player.update({
-      where: { id: BigInt(playerId) },
-      data: { hp: { increment: Number(delta || 0) } }
-    });
-    res.json({ ok: true, hp: p.hp });
-  } catch (e) {
-    console.error('POST /api/gm/grant-hp error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ===== Bot =====
-const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 12000 });
-const replySafe = async (ctx, f) => { try { await f(); } catch (e) { console.error('reply error:', e?.response?.description || e.message || e); } };
-
-// /start с диплинком: t.me/<bot>?start=ABC123
-bot.start(async (ctx) => {
-  const payload = ctx.startPayload; // код игры, если пришли по ссылке
-  if (!payload) {
-    await replySafe(ctx, () => ctx.reply('Привет! /new — создать игру (ты будешь ГМ) • /join CODE — войти как игрок'));
-    return;
-  }
-  const code = String(payload).toUpperCase();
-  const game = await prisma.game.findUnique({ where: { code } });
-  if (!game) return replySafe(ctx, () => ctx.reply('❌ Игра не найдена'));
-
-  // авто‑вход как игрок
-  const tgId = String(ctx.from.id);
-  await prisma.player.upsert({
-    where: { gameId_tgId: { gameId: game.id, tgId } },
-    update: {},
-    create: { gameId: game.id, tgId, name: ctx.from.first_name || 'Игрок' }
+// /new — создаёт новую игру
+bot.command("new", async (ctx) => {
+  const code = Math.random().toString(36).substring(2, 7).toUpperCase();
+  const game = await prisma.game.create({
+    data: { code, gmId: ctx.from.id.toString(), title: "Новая игра" }
   });
-  await replySafe(ctx, () => ctx.reply(
-    `✅ Ты присоединился к игре ${code}`,
-    Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑аппу', `${APP_URL}/?code=${code}&role=player`)]])
-  ));
+  await ctx.reply(`🎲 Игра создана!\nКод: ${code}\nОткрой в миниапп`);
 });
 
-// /new — создать игру (автор = ГМ)
-bot.command('new', async (ctx) => {
-  try {
-    const gmId = String(ctx.from?.id || '');
-    if (!gmId) return;
-    // уникальный код
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-      const t = code6();
-      const exists = await prisma.game.findUnique({ where: { code: t } });
-      if (!exists) { code = t; break; }
+// /join CODE — подключение игрока
+bot.command("join", async (ctx) => {
+  const code = ctx.message.text.split(" ")[1];
+  if (!code) return ctx.reply("❌ Укажи код игры: /join ABCDE");
+
+  const game = await prisma.game.findUnique({ where: { code } });
+  if (!game) return ctx.reply("❌ Игра не найдена");
+
+  await prisma.player.upsert({
+    where: { gameId_tgId: { gameId: game.id, tgId: ctx.from.id.toString() } },
+    update: {},
+    create: {
+      gameId: game.id,
+      tgId: ctx.from.id.toString(),
+      name: ctx.from.first_name || "Игрок"
     }
-    if (!code) code = code6();
+  });
 
-    const game = await prisma.game.create({
-      data: { code, gmId, started: false, expiresAt: addHours(6) }
-    });
-    // ГМ как игрок
-    await prisma.player.upsert({
-      where: { gameId_tgId: { gameId: game.id, tgId: gmId } },
-      update: { isGM: true, name: 'GM', avatar: '🎲' },
-      create: { gameId: game.id, tgId: gmId, name: 'GM', avatar: '🎲', isGM: true }
-    });
-
-    const deepLink = `https://t.me/${ctx.botInfo.username}?start=${game.code}`;
-    await replySafe(ctx, () => ctx.reply(
-      `Создана игра. Код: ${game.code}\n\nОтправь эту ссылку игрокам:`,
-      Markup.inlineKeyboard([[Markup.button.url('🔗 Присоединиться', deepLink)]])
-    ));
-    await replySafe(ctx, () => ctx.reply(
-      `ГМ-панель:`,
-      Markup.inlineKeyboard([[Markup.button.webApp('Открыть (ГМ)', `${APP_URL}/?code=${game.code}&role=gm`)]])
-    ));
-  } catch (e) {
-    console.error('/new error:', e);
-    await replySafe(ctx, () => ctx.reply('Произошла ошибка при создании игры.'));
-  }
+  await ctx.reply(`✅ Ты в игре ${game.title}!`);
 });
 
-// /join CODE — «старый» способ входа
-bot.command('join', async (ctx) => {
-  try {
-    const parts = (ctx.message?.text || '').trim().split(/\s+/);
-    const code = (parts[1] || '').toUpperCase();
-    if (!code) return replySafe(ctx, () => ctx.reply('Использование: /join CODE'));
+app.use(bot.webhookCallback("/telegraf"));
 
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return replySafe(ctx, () => ctx.reply('Игра не найдена'));
+// =============== API ===============
 
-    await replySafe(ctx, () => ctx.reply(
-      `Комната: ${code}`,
-      Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑аппу', `${APP_URL}/?code=${code}&role=player`)]])
-    ));
-  } catch (e) {
-    console.error('/join error:', e);
-    await replySafe(ctx, () => ctx.reply('Ошибка при /join.'));
-  }
+// Лобби (игра + игроки + чат)
+app.get("/api/lobby/:code", async (req, res) => {
+  const game = await prisma.game.findUnique({
+    where: { code: req.params.code },
+    include: { players: true, locations: true, items: true, messages: true }
+  });
+  res.json(game);
 });
 
-// лог апдейтов (диагностика)
-bot.on('message', (ctx, next) => { try { console.log('📩', JSON.stringify(ctx.update)); } catch {} return next(); });
+// Обновление игрока
+app.post("/api/player/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  let player;
+  if (id === 0) {
+    player = await prisma.player.create({ data: req.body });
+  } else {
+    player = await prisma.player.update({ where: { id }, data: req.body });
+  }
+  res.json(player);
+});
 
-// webhook (мгновенный 200, обработка асинхронно)
-const webhookRoute = `/telegraf/${BOT_SECRET_PATH}`;
-app.post(webhookRoute, (req, res) => { res.status(200).end(); bot.handleUpdate(req.body).catch(e => console.error('handleUpdate error:', e)); });
+// Новая локация
+app.post("/api/location", async (req, res) => {
+  const loc = await prisma.location.create({ data: req.body });
+  res.json(loc);
+});
 
-// start
-app.listen(PORT, async () => {
-  console.log(`🌐 Web server on ${PORT}`);
-  try { await prisma.$connect(); console.log('✅ Prisma connected'); }
-  catch (e) { console.error('❌ Prisma connect error:', e.message || e); }
+// Новый предмет
+app.post("/api/item", async (req, res) => {
+  const item = await prisma.item.create({ data: req.body });
+  res.json(item);
+});
 
-  const full = `${APP_URL}${webhookRoute}`;
-  try {
-    await bot.telegram.setWebhook(full, { allowed_updates: ['message','callback_query'], drop_pending_updates: true });
-    console.log('🔗 Webhook set:', full);
-  } catch (e) {
-    console.error('❌ setWebhook:', e?.response?.description || e.message || e);
+// Чат
+app.post("/api/message", async (req, res) => {
+  const msg = await prisma.message.create({ data: req.body });
+  res.json(msg);
+});
+
+// Броски кубиков
+app.post("/api/roll", async (req, res) => {
+  const { gameId, playerId, die } = req.body;
+  const result = 1 + Math.floor(Math.random() * die);
+  const roll = await prisma.roll.create({
+    data: { gameId, playerId, die, result }
+  });
+  res.json(roll);
+});
+
+// Старт игры
+app.post("/api/game/:id/start", async (req, res) => {
+  const gameId = parseInt(req.params.id);
+  const { locationId } = req.body;
+
+  await prisma.game.update({ where: { id: gameId }, data: { started: true } });
+
+  // Раскидываем игроков в стартовую локацию
+  await prisma.player.updateMany({
+    where: { gameId },
+    data: { locationId }
+  });
+
+  res.json({ ok: true });
+});
+
+// =============== START SERVER ===============
+const port = process.env.PORT || 10000;
+
+app.listen(port, async () => {
+  console.log("🌐 Web server on " + port);
+  if (process.env.BOT_TOKEN) {
+    await bot.telegram.setWebhook(
+      (process.env.RENDER_EXTERNAL_URL || "https://example.com") + "/telegraf"
+    );
+    console.log("🤖 Bot webhook set");
   }
 });
