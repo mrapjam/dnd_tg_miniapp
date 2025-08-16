@@ -1,4 +1,4 @@
-// server.js — Telegraf в webhook-режиме + Express + Prisma (Supabase)
+// server.js — Telegraf (webhook) + Express + Prisma (Supabase)
 import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -7,7 +7,7 @@ import { PrismaClient } from '@prisma/client';
 
 const {
   BOT_TOKEN,
-  BOT_SECRET_PATH = 'telegraf-9f2c1a', // добавь в Render любым рандомом
+  BOT_SECRET_PATH = 'telegraf-9f2c1a', // положи такое же имя в Render → Environment
   APP_URL,
   DATABASE_URL,
   PORT = 3000,
@@ -39,15 +39,28 @@ bot.start((ctx) =>
 
 bot.command('ping', (ctx) => ctx.reply('pong'));
 
-bot.command('new', async (ctx) => {
-  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
-  return ctx.reply(
-    `Игра создана. Код: ${code}`,
-    Markup.inlineKeyboard([[Markup.button.webApp('Панель мастера', `${baseUrl}/?code=${code}`)]])
-  );
+// УСТОЙЧИВЫЙ /new (с логами и try/catch) + алиас /startgame
+bot.command(['new', 'startgame'], async (ctx) => {
+  try {
+    console.log('CMD /new from', ctx.from?.id);
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    await prisma.game.create({ data: { code, gmTgId: String(ctx.from.id) } });
+    await ctx.reply(
+      `Игра создана. Код: ${code}`,
+      Markup.inlineKeyboard([[Markup.button.webApp('Панель мастера', `${baseUrl}/?code=${code}`)]])
+    );
+  } catch (e) {
+    console.error('ERROR /new:', e);
+    await ctx.reply('Не удалось создать игру. Попробуй ещё раз через минуту.');
+  }
 });
 
+// Подсказка, если пользователь пишет "new" текстом
+bot.hears(/^\/?new$/i, async (ctx) =>
+  ctx.reply('Используй команду /new — и появится код игры. Если что, в мини‑аппе есть кнопка «Создать игру (GM)».')
+);
+
+// JOIN: запрос кода комнаты и апсерт игрока
 bot.command('join', (ctx) => {
   ctx.reply('Введи код комнаты (6 символов):');
   const handler = async (ctx2) => {
@@ -66,35 +79,41 @@ bot.command('join', (ctx) => {
       'Заходим!',
       Markup.inlineKeyboard([[Markup.button.webApp('Открыть игру', `${baseUrl}/?code=${code}`)]])
     );
-    bot.off('text', handler);
+    bot.off('text', handler); // одноразовый обработчик
   };
   bot.on('text', handler);
 });
 
+// Быстрые броски из чата
 bot.hears(/^\/roll (d6|d8|d20)$/i, (ctx) => {
   const die = Number(ctx.match[1].slice(1));
   const result = 1 + Math.floor(Math.random() * die);
   return ctx.reply(`🎲 ${ctx.from.first_name} бросил d${die}: *${result}*`, { parse_mode: 'Markdown' });
 });
 
-// ===== ВЕБХУК (явный POST + самый верх) =====
+// ===== ВЕБХУК (явный POST + ставим ВВЕРХУ) =====
 app.post(webhookPath, (req, res) => bot.webhookCallback(webhookPath)(req, res));
-// GET для ручной проверки
+// GET для ручной проверки браузером
 app.get(webhookPath, (_req, res) => res.status(200).send('ok'));
 
 // ===== Mini‑app (static) + API =====
 app.use(express.static('webapp'));
 app.get('/health', (_req, res) => res.send('ok'));
 
-// API: создать игру (на случай, если нужно из вне)
+// API: создать игру (для кнопки в мини‑аппе)
 app.post('/api/games', async (req, res) => {
-  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  const { gmTgId } = req.body || {};
-  await prisma.game.create({ data: { code, gmTgId: String(gmTgId || '0') } });
-  res.json({ code });
+  try {
+    const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const { gmTgId } = req.body || {};
+    await prisma.game.create({ data: { code, gmTgId: String(gmTgId || '0') } });
+    res.json({ code });
+  } catch (e) {
+    console.error('API create game error', e);
+    res.status(500).json({ error: 'create_failed' });
+  }
 });
 
-// API: join
+// API: join из мини‑аппы
 app.post('/api/games/:code/join', async (req, res) => {
   const game = await prisma.game.findUnique({ where: { code: req.params.code } });
   if (!game) return res.status(404).json({ error: 'Game not found' });
@@ -111,7 +130,7 @@ app.post('/api/games/:code/join', async (req, res) => {
   res.json({ ok: true });
 });
 
-// API: состояние игры
+// API: состояние игры (игроки + последние броски)
 app.get('/api/games/:code', async (req, res) => {
   const game = await prisma.game.findUnique({
     where: { code: req.params.code },
@@ -128,7 +147,7 @@ app.get('/api/games/:code', async (req, res) => {
   });
 });
 
-// API: бросок кости
+// API: бросок кости (сохраняем в БД)
 app.post('/api/games/:code/roll', async (req, res) => {
   const { tgId, die } = req.body || {};
   const d = Number(die);
