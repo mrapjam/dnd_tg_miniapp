@@ -1,5 +1,4 @@
 // prisma/schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,33 +9,36 @@ datasource db {
 }
 
 model Game {
-  id           Int       @id @default(autoincrement())
-  code         String    @unique
-  gmId         String
-  started      Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  lastActivity DateTime
+  id           String   @id @default(cuid())
+  code         String   @unique @db.VarChar(6) // 6-символьный код комнаты
+  gmId         String   @db.VarChar(32)        // id мастера (telegram user id строкой)
+  started      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  lastActivity DateTime @default(now())
   expiresAt    DateTime
 
-  players      Player[]
-  messages     Message[]
+  // связи
+  players  Player[]
+  messages Message[]
 }
 
 model Player {
-  id        Int      @id @default(autoincrement())
-  name      String
-  avatar    String
+  id        String   @id @default(cuid())
+  name      String   @db.VarChar(64)
+  avatar    String   @default("🛡️") @db.VarChar(8)
   joinedAt  DateTime @default(now())
 
-  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  gameId    Int
+  // связь с Game
+  gameId String
+  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
 }
 
 model Message {
-  id        Int      @id @default(autoincrement())
+  id        String   @id @default(cuid())
   text      String
   createdAt DateTime @default(now())
 
-  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  gameId    Int
+  // связь с Game
+  gameId String
+  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
 }
