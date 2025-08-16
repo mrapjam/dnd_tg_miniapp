@@ -78,7 +78,10 @@ bot.start(async (ctx) => {
 bot.command("new", async (ctx) => {
   await ctx.reply("Команда /new получена ✅");
 });
-
+// Чтобы руками проверять в браузере:
+app.get(WEBHOOK_PATH, (req, res) => {
+  res.status(200).send("Webhook path OK (GET) — Telegram должен бить сюда POST");
+});
 // ПОДКЛЮЧАЕМ ХЭНДЛЕР ВЕБХУКА ИМЕННО НА ЭТОТ ПУТЬ
 app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
 
