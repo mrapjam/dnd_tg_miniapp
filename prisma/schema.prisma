@@ -9,28 +9,56 @@ datasource db {
 }
 
 model Game {
-  id           String   @id @default(cuid())
-  code         String   @unique @db.VarChar(6) // 6-символьный код комнаты
-  gmId         String   @db.VarChar(32)        // id мастера (telegram user id строкой)
-  started      Boolean  @default(false)
-  createdAt    DateTime @default(now())
-  lastActivity DateTime @default(now())
-  expiresAt    DateTime
+  id         String   @id @default(cuid())
+  code       String   @unique
+  gmId       String   // Telegram ID мастера (строкой, чтобы не ловить bigint)
+  started    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
 
-  // связи
-  players  Player[]
-  messages Message[]
+  // текущая локация (опционально)
+  currentLocationId String? 
+  currentLocation   Location? @relation("CurrentLocation", fields: [currentLocationId], references: [id])
+
+  players   Player[]
+  items     Item[]
+  messages  Message[]
+  locations Location[]
+
+  @@index([expiresAt])
 }
 
 model Player {
   id        String   @id @default(cuid())
-  name      String   @db.VarChar(64)
-  avatar    String   @default("🛡️") @db.VarChar(8)
-  joinedAt  DateTime @default(now())
+  tgId      String   // Telegram user id
+  name      String
+  avatar    String?  // эмодзи/иконка/URL
+  hp        Int      @default(10)
+  gold      Int      @default(0)
+  isGM      Boolean  @default(false)
 
-  // связь с Game
   gameId String
-  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  items   Item[]
+  messages Message[]
+
+  @@index([gameId, tgId])
+}
+
+model Item {
+  id        String   @id @default(cuid())
+  name      String
+  // Если playerId = null → предмет "на полу"
+  playerId  String?
+  player    Player? @relation(fields: [playerId], references: [id], onDelete: SetNull)
+
+  gameId String
+  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([gameId, createdAt])
 }
 
 model Message {
@@ -38,7 +66,23 @@ model Message {
   text      String
   createdAt DateTime @default(now())
 
-  // связь с Game
   gameId String
   game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  authorId String?
+  author   Player? @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([gameId, createdAt])
+}
+
+model Location {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @default("")
+  imageUrl    String?  // можно сохранить URL картинки локации
+
+  gameId String
+  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([gameId])
 }
