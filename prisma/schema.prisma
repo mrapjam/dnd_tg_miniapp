@@ -18,17 +18,14 @@ model Game {
   id        String   @id @default(uuid()) @db.Uuid
   code      String   @unique
   title     String?
-  gmId      String                      // Telegram ID мастера (как строка)
+  gmId      String
   started   Boolean  @default(false)
   createdAt DateTime @default(now())
-  /// Срок жизни игры (для авто‑очистки). 6 часов по умолчанию
   expiresAt DateTime @default(dbgenerated("now() + interval '6 hours'")) @db.Timestamptz(6)
 
-  // Текущая "глобальная" локация (опционально)
   currentLocationId String?
   currentLocation   Location? @relation("GameCurrentLocation", fields: [currentLocationId], references: [id])
 
-  // Связи
   players   Player[]
   locations Location[]
   items     Item[]
@@ -43,21 +40,21 @@ model Player {
   gameId    String   @db.Uuid
   game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
-  tgId      String                       // Telegram user id (как строка)
+  tgId      String
   name      String
-  avatar    String?                      // ключ/URL аватарки
+  avatar    String?
   role      Role      @default(PLAYER)
 
   hp        Int       @default(10)
   gold      Int       @default(0)
 
-  // Текущая локация игрока (опционально)
   currentLocationId String?  @db.Uuid
   currentLocation   Location? @relation("PlayerCurrentLocation", fields: [currentLocationId], references: [id])
 
-  items     Item[]
-  messages  Message[]
+  // Владеемые предметы (ответная сторона к Item.owner)
+  items     Item[]   @relation("PlayerItems")
 
+  messages  Message[]
   createdAt DateTime @default(now())
 
   @@index([gameId])
@@ -75,13 +72,8 @@ model Location {
 
   createdAt DateTime @default(now())
 
-  // Предметы, лежащие в этой локации
-  items     Item[]   @relation("LocationItems")
-
-  // Игроки, для которых эта локация текущая
-  playersHere Player[] @relation("PlayerCurrentLocation")
-
-  // Обратный конец связи "текущая локация игры"
+  items       Item[]    @relation("LocationItems")
+  playersHere Player[]  @relation("PlayerCurrentLocation")
   gamesAsCurrentLocation Game[] @relation("GameCurrentLocation")
 
   @@index([gameId])
@@ -96,17 +88,16 @@ model Item {
   name      String
   descr     String?
 
-  // Владелец (если предмет у игрока)
+  // Владелец (игрок)
   ownerId   String?  @db.Uuid
   owner     Player?  @relation("PlayerItems", fields: [ownerId], references: [id])
 
-  // Локация (если предмет на полу)
+  // Локация
   locationId String?  @db.Uuid
   location   Location? @relation("LocationItems", fields: [locationId], references: [id])
 
-  goldAmount Int?     // если это "мешочек золота" вместо обычного предмета
-
-  createdAt DateTime @default(now())
+  goldAmount Int?
+  createdAt  DateTime @default(now())
 
   @@index([gameId])
   @@index([ownerId])
@@ -118,7 +109,6 @@ model Message {
   gameId    String   @db.Uuid
   game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
 
-  // Автор сообщения (может быть null — системное / от ГМа)
   authorId  String?  @db.Uuid
   author    Player?  @relation(fields: [authorId], references: [id])
 
