@@ -4,14 +4,15 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "render-build": "npm install && npx prisma generate && npx prisma migrate deploy"
+    "build:render": "npm install && npx prisma generate",
+    "predeploy:render": "npx prisma db push --accept-data-loss"
   },
   "dependencies": {
+    "@prisma/client": "^5.17.0",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "telegraf": "^4.16.3",
-    "@prisma/client": "^5.17.0"
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "prisma": "^5.17.0"
