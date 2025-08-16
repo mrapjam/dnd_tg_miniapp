@@ -32,13 +32,18 @@
   <header>DnD Mini App</header>
 
   <main>
-    <!-- Левая колонка: мастер/игроки -->
-    <section class="card stack" id="left">
+    <!-- Левая колонка -->
+    <section class="card stack">
       <div id="who" class="muted">Загрузка...</div>
 
       <div class="row">
         <button id="createGame">🧙 Создать игру (GM)</button>
         <span class="pill">Код: <span id="codeBadge">—</span></span>
+      </div>
+
+      <div class="row" id="nameRow" style="display:none;">
+        <input id="playerName" placeholder="Ваше имя персонажа" />
+        <button id="saveName">Сохранить имя</button>
       </div>
 
       <div class="card">
@@ -61,6 +66,11 @@
           <input id="itemName" placeholder="Название" />
           <input id="itemQty" type="number" min="1" value="1" />
           <select id="itemOwner"></select>
+          <select id="itemType">
+            <option value="weapon">Оружие</option>
+            <option value="armor">Броня</option>
+            <option value="misc" selected>Прочее</option>
+          </select>
         </div>
         <textarea id="itemNote" placeholder="Заметка" rows="2"></textarea>
         <div class="row">
@@ -70,7 +80,7 @@
       </div>
     </section>
 
-    <!-- Правая колонка: инвентарь и профиль -->
+    <!-- Правая колонка -->
     <section class="card stack">
       <h3 style="margin:6px 0 8px">Инвентарь игры</h3>
       <div id="inventory"></div>
@@ -85,28 +95,27 @@
   <script>
     const qs = new URLSearchParams(location.search);
     const code = qs.get('code') || '';
-    const codeBadge = document.getElementById('codeBadge'); codeBadge.textContent = code || '—';
+    document.getElementById('codeBadge').textContent = code || '—';
 
     const api = (p, opt={}) => fetch(p, { headers: {'Content-Type':'application/json'}, ...opt });
 
-    // Telegram WebApp
     const tg = window.Telegram?.WebApp;
     const user = tg?.initDataUnsafe?.user || { id: 'test', first_name: 'Hero' };
 
-    const who = document.getElementById('who');
-    who.textContent = `Вы: ${user.first_name} (${user.id})`;
+    document.getElementById('who').textContent = `Вы: ${user.first_name} (#${user.id})`;
     document.getElementById('createGame').onclick = async () => {
       const r = await api('/api/games', { method:'POST', body: JSON.stringify({ gmTgId: String(user.id) }) });
       const data = await r.json();
       if (data.code) location.href = `/?code=${data.code}`; else alert('Не удалось создать игру');
     };
 
-    // === Игровая логика ===
     async function ensureJoin() {
       if (!code) return;
+      // имя, если уже введено в поле
+      const nameDraft = document.getElementById('playerName').value.trim();
       await api(`/api/games/${code}/join`, {
         method:'POST',
-        body: JSON.stringify({ tgId: String(user.id), name: user.first_name })
+        body: JSON.stringify({ tgId: String(user.id), name: nameDraft || user.first_name })
       });
     }
 
@@ -116,13 +125,21 @@
       if (!r.ok) return;
       const data = await r.json();
 
-      // показать/скрыть панель ГМа
+      // кнопку "Создать игру" показываем только если нет кода или ты ГМ
+      document.getElementById('createGame').style.display = (data.isGM || !code) ? 'inline-block' : 'none';
+
+      // имя игрока
+      const me = data.players.find(p => p.tgId === String(user.id));
+      document.getElementById('nameRow').style.display = code && !data.isGM ? 'flex' : 'none';
+      if (me && me.name) document.getElementById('playerName').value = me.name;
+
+      // панель ГМа
       document.getElementById('gmPanel').style.display = data.isGM ? 'block' : 'none';
 
       // список игроков
       const playersDiv = document.getElementById('players');
       playersDiv.innerHTML = data.players.map(p => `
-        <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0">
+        <div class="row" data-tg="${p.tgId}" style="justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0">
           <div>
             <div><b>${p.name || 'Безымянный'}</b> <span class="muted">(#${p.tgId})</span></div>
             <div class="muted">HP: ${p.hp} • Gold: ${p.gold}</div>
@@ -149,31 +166,48 @@
       await Promise.all([loadInventory(), loadMyInventory()]);
     }
 
-    // Кнопки статов (только GM)
+    // сохранить имя
+    document.getElementById('saveName').onclick = async () => {
+      if (!code) return;
+      const name = document.getElementById('playerName').value.trim().slice(0,40) || 'Hero';
+      await api(`/api/games/${code}/players/${String(user.id)}`, {
+        method:'PATCH', body: JSON.stringify({ name })
+      });
+      await loadGame();
+    };
+
+    // правка статов (ГМ)
     document.getElementById('players').addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-act]');
       if (!btn || !code) return;
       const act = btn.getAttribute('data-act');
       const tgId = btn.getAttribute('data-tg');
-      let patch = {};
-      if (act === 'hp-') patch.hp = -1;
-      if (act === 'hp+') patch.hp = +1;
-      if (act === 'gold+') patch.gold = +1;
 
-      // получаем текущее значение, чтобы инкрементировать
       const r = await api(`/api/games/${code}`);
       const g = await r.json();
       const pl = g.players.find(p => p.tgId === tgId);
       if (!pl) return;
+
       const body = {};
-      if (patch.hp)   body.hp   = Math.max(0, (pl.hp || 0) + patch.hp);
-      if (patch.gold) body.gold = Math.max(0, (pl.gold || 0) + patch.gold);
+      if (act === 'hp-') body.hp = Math.max(0, (pl.hp || 0) - 1);
+      if (act === 'hp+') body.hp = (pl.hp || 0) + 1;
+      if (act === 'gold+') body.gold = (pl.gold || 0) + 1;
 
       await api(`/api/games/${code}/players/${tgId}`, { method:'PATCH', body: JSON.stringify(body) });
       await loadGame();
     });
 
-    // Дайсы
+    // двойной клик по игроку — быстрый сет золота
+    document.getElementById('players').addEventListener('dblclick', async (e) => {
+      const row = e.target.closest('[data-tg]'); if (!row) return;
+      const tgId = row.getAttribute('data-tg');
+      const val = prompt('Установить золото =', '0'); if (val === null) return;
+      const gold = Math.max(0, parseInt(val,10) || 0);
+      await api(`/api/games/${code}/players/${tgId}`, { method:'PATCH', body: JSON.stringify({ gold }) });
+      await loadGame();
+    });
+
+    // дайсы
     document.querySelectorAll('button[data-d]').forEach(btn => {
       btn.onclick = async () => {
         if (!code) { alert('Сначала создайте/введите код игры (кнопка выше или /new в боте)'); return; }
@@ -187,7 +221,7 @@
       };
     });
 
-    // === Инвентарь (игры и мой) ===
+    // инвентарь
     async function loadInventory() {
       if (!code) { document.getElementById('inventory').innerHTML = ''; return; }
       const r = await api(`/api/games/${code}/items`);
@@ -206,7 +240,7 @@
             ${items.map(it => `
               <tr>
                 <td>
-                  <b>${it.name}</b> ×${it.qty}
+                  <b>${it.name}</b> ×${it.qty} <span class="pill">${it.type || 'misc'}</span>
                   <div class="muted">${it.ownerName ? `👤 ${it.ownerName}` : '🟦 на полу'}</div>
                   ${it.note ? `<div class="muted">${it.note}</div>` : ''}
                 </td>
@@ -257,7 +291,7 @@
       div.innerHTML = items.map(it => `
         <div class="row" style="justify-content:space-between; border-bottom:1px solid var(--border); padding:6px 0">
           <div>
-            <b>${it.name}</b> ×${it.qty}
+            <b>${it.name}</b> ×${it.qty} <span class="pill">${it.type || 'misc'}</span>
             ${it.note ? `<div class="muted">${it.note}</div>` : ''}
           </div>
           <button class="ghost" data-id="${it.id}" data-act="drop">На пол</button>
@@ -275,16 +309,17 @@
       });
     }
 
-    // Выдача предмета (GM): игроку из селекта или "На пол"
+    // Выдача предмета (GM)
     document.getElementById('giveItem').onclick = async () => {
       if (!code) return;
       const name = document.getElementById('itemName').value.trim();
       const qty  = Number(document.getElementById('itemQty').value || 1);
       const note = document.getElementById('itemNote').value.trim();
       const ownerTgId = document.getElementById('itemOwner').value || null;
+      const type = document.getElementById('itemType').value || 'misc';
       if (!name) { alert('Введите название'); return; }
       await api(`/api/games/${code}/items`, {
-        method:'POST', body: JSON.stringify({ name, qty, note, ownerTgId })
+        method:'POST', body: JSON.stringify({ name, qty, note, ownerTgId, type })
       });
       document.getElementById('itemName').value = '';
       document.getElementById('itemQty').value  = 1;
@@ -296,9 +331,10 @@
       const name = document.getElementById('itemName').value.trim();
       const qty  = Number(document.getElementById('itemQty').value || 1);
       const note = document.getElementById('itemNote').value.trim();
+      const type = document.getElementById('itemType').value || 'misc';
       if (!name) { alert('Введите название'); return; }
       await api(`/api/games/${code}/items`, {
-        method:'POST', body: JSON.stringify({ name, qty, note, ownerTgId: null })
+        method:'POST', body: JSON.stringify({ name, qty, note, ownerTgId: null, type })
       });
       document.getElementById('itemName').value = '';
       document.getElementById('itemQty').value  = 1;
@@ -306,7 +342,7 @@
       await Promise.all([loadInventory(), loadMyInventory()]);
     };
 
-    // Авто‑обновление каждые 3 сек
+    // авто‑обновление
     let timer;
     function startPolling() {
       timer && clearInterval(timer);
@@ -315,7 +351,6 @@
       }, 3000);
     }
 
-    // init
     ensureJoin().then(() => { loadGame().then(startPolling); });
     try { tg && tg.expand(); } catch(e){}
   </script>
