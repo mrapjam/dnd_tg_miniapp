@@ -1,4 +1,4 @@
-// server.js — Telegraf webhook + расширенные логи ответов
+// server.js — чистый старт: бот + мини‑аппа, память с TTL 6 часов
 
 import express from 'express';
 import cors from 'cors';
@@ -7,126 +7,164 @@ import { Telegraf, Markup } from 'telegraf';
 
 dotenv.config();
 
-// ====== ENV ======
+// ===== ENV =====
 const PORT = process.env.PORT || 10000;
 const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || 'telegraf-9f2c1a';
 
 if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is not set');
-  process.exit(1);
+  console.error('❌ BOT_TOKEN is not set'); process.exit(1);
 }
 
-// ====== APP ======
+// ===== In‑Memory store (TTL 6h) =====
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const games = new Map(); // gameCode -> {code, gmId, createdAt, expiresAt, players: Map}
+
+// создаём игру
+function createGame(gmId) {
+  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const now = Date.now();
+  const game = {
+    code,
+    gmId: String(gmId),
+    createdAt: now,
+    expiresAt: now + SIX_HOURS_MS,
+    players: new Map() // key: tgId -> {tgId,name,avatar,gold,hp}
+  };
+  games.set(code, game);
+  return game;
+}
+
+// чистим просроченные игры
+function cleanupExpired() {
+  const now = Date.now();
+  let removed = 0;
+  for (const [code, g] of games) {
+    if (g.expiresAt <= now) {
+      games.delete(code);
+      removed++;
+    }
+  }
+  if (removed) console.log('🧹 memory cleanup:', removed);
+}
+setInterval(cleanupExpired, 60 * 1000);
+
+// ===== WebApp (мини‑аппа) =====
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// Простой корневой маршрут (чтобы браузером видеть «жив» ли сервер)
-app.get('/', (_req, res) => {
-  res.status(200).send(`Dnd Mini App backend is up. Webhook: /telegraf/${BOT_SECRET_PATH}`);
-});
+// статика
+app.use(express.static('webapp'));
 
-// Диагностика
-app.get('/healthz', (_req, res) => res.status(200).send('ok'));
-app.get('/whoami', (_req, res) => {
+// health
+app.get('/healthz', (_req, res) => res.send('ok'));
+
+// API: состояние по коду игры
+app.get('/api/state', (req, res) => {
+  const { code, me } = req.query;
+  const game = code && games.get(String(code).toUpperCase());
+  if (!game) return res.json({ ok: true, exists: false });
+
+  const you = me ? game.players.get(String(me)) : null;
+  const players = [...game.players.values()].map(p => ({
+    tgId: p.tgId, name: p.name, avatar: p.avatar, gold: p.gold, hp: p.hp
+  }));
+
   res.json({
     ok: true,
-    port: PORT,
-    appUrl: APP_URL,
-    webhookPath: `/telegraf/${BOT_SECRET_PATH}`,
+    exists: true,
+    code: game.code,
+    gmId: game.gmId,
+    expiresAt: game.expiresAt,
+    you,
+    players
   });
 });
 
-// Лог всех запросов к вебхуку (до Telegraf)
-app.use(`/telegraf/${BOT_SECRET_PATH}`, (req, _res, next) => {
-  const ua = req.headers['user-agent'] || '';
-  console.log(`⟵ HTTP ${req.method} ${req.originalUrl} UA=${ua}`);
-  if (req.body && typeof req.body === 'object') {
-    console.log('⟵ Update body:', JSON.stringify(req.body));
-  } else {
-    console.log('⟵ No or invalid JSON body');
-  }
-  next();
+// API: вход в лобби (создаёт/обновляет игрока)
+app.post('/api/lobby/join', (req, res) => {
+  const { code, tgId, name, avatar } = req.body || {};
+  const game = code && games.get(String(code).toUpperCase());
+  if (!game) return res.status(400).json({ ok: false, error: 'GAME_NOT_FOUND' });
+  if (!tgId || !name) return res.status(400).json({ ok: false, error: 'BAD_PAYLOAD' });
+
+  const key = String(tgId);
+  const prev = game.players.get(key);
+  const player = {
+    tgId: key,
+    name: String(name).slice(0, 64),
+    avatar: String(avatar || '').slice(0, 16),
+    gold: prev?.gold ?? 0,
+    hp: prev?.hp ?? 10
+  };
+  game.players.set(key, player);
+
+  res.json({ ok: true, player });
 });
 
-// ====== BOT ======
-const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 12_000 });
+// ===== БОТ (webhook) =====
+const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 12000 });
 
-// Универсальный обёртчик для логирования результата отправки
-async function safeReply(ctx, action) {
-  try {
-    const res = await action();
-    console.log('✅ reply sent:', JSON.stringify({
-      chatId: ctx.chat?.id,
-      messageId: res?.message_id,
-      text: res?.text?.slice?.(0, 120)
-    }));
-  } catch (err) {
-    const desc = err?.response?.description || err?.message || String(err);
-    console.error('❌ reply error:', desc);
-  }
+async function safeReply(ctx, fn) {
+  try { await fn(); }
+  catch (e) { console.error('❌ send error:', e?.response?.description || e?.message || e); }
 }
 
-// /start — контроль, что бот отвечает
 bot.start(async (ctx) => {
   await safeReply(ctx, () => ctx.reply(
-    'Привет! Я на вебхуке и жив. Используй /new для теста кнопки.'
+    'Привет! Используй /new чтобы создать комнату (игра хранится 6 часов).'
   ));
 });
 
-// /new — просто генерим тестовый код + кнопку
 bot.command('new', async (ctx) => {
-  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-  await safeReply(ctx, () => ctx.reply(
-    `Создана тест-игра. Код: ${code}\nНажми "Открыть мини-апп" (заглушка).`,
-    Markup.inlineKeyboard([
-      [Markup.button.webApp('Открыть мини-апп', `${APP_URL}/`)]
-    ])
-  ));
+  const gmId = ctx.from?.id;
+  if (!gmId) return;
+
+  const game = createGame(gmId);
+  const btn = Markup.inlineKeyboard([
+    [Markup.button.webApp('Открыть мини‑аппу', `${APP_URL}/?code=${game.code}`)]
+  ]);
+
+  await safeReply(ctx, () =>
+    ctx.reply(`Создана игра. Код: ${game.code}\n(данные хранятся в памяти 6 часов)`, btn)
+  );
 });
 
-// Логируем любые другие сообщения/колбэки (на случай если пишешь не командами)
-bot.on('message', async (ctx, next) => {
-  try {
-    console.log('📩 on(message):', JSON.stringify(ctx.update));
-  } catch (_) {}
-  return next();
-});
+// универсальные логи
+bot.on('message', (ctx, next) => { try { console.log('📩', JSON.stringify(ctx.update)); } catch {} return next(); });
 
-bot.on('callback_query', async (ctx, next) => {
-  try {
-    console.log('🔘 on(callback_query):', JSON.stringify(ctx.update));
-  } catch (_) {}
-  return next();
-});
-
-// Подключаем вебхук как middleware
+// Webhook: мгновенный 200 и асинхронная обработка
 const webhookRoute = `/telegraf/${BOT_SECRET_PATH}`;
-app.use(webhookRoute, bot.webhookCallback(webhookRoute));
+app.post(webhookRoute, (req, res) => {
+  res.status(200).end(); // сразу отвечаем Telegram
+  bot.handleUpdate(req.body).catch(e => console.error('❌ handleUpdate:', e));
+});
 
-// ====== START ======
+// ===== START =====
 app.listen(PORT, async () => {
   console.log(`🌐 Web server on ${PORT}`);
 
-  const fullWebhookUrl = `${APP_URL}${webhookRoute}`;
   try {
-    // На всякий случай сносим прежний вебхук
-    await bot.telegram.deleteWebhook().catch(() => {});
-    // Ставим новый
-    await bot.telegram.setWebhook(fullWebhookUrl, {
-      allowed_updates: ['message', 'callback_query'],
-    });
-    console.log(`🔗 Webhook set: ${fullWebhookUrl}`);
+    const me = await bot.telegram.getMe();
+    console.log('👤 Bot:', me);
   } catch (e) {
-    console.error('❌ setWebhook error:', e?.response?.description || e.message || e);
+    console.error('❌ getMe:', e?.response?.description || e?.message || e);
   }
 
+  const fullWebhook = `${APP_URL}${webhookRoute}`;
   try {
+    await bot.telegram.setWebhook(fullWebhook, {
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: true
+    });
+    console.log('🔗 Webhook set:', fullWebhook);
+
     const info = await bot.telegram.getWebhookInfo();
     console.log('ℹ️ getWebhookInfo:', info);
   } catch (e) {
-    console.log('getWebhookInfo error:', e?.response?.description || e.message || e);
+    console.error('❌ setWebhook:', e?.response?.description || e?.message || e);
   }
 });
