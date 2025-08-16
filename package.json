@@ -1,20 +1,19 @@
 {
-  "name": "dnd-tg-miniapp",
-  "version": "1.0.0",
+  "name": "dnd_tg_miniapp",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "build:render": "npm install && npx prisma generate",
-    "predeploy:render": "npx prisma db push --accept-data-loss"
+    "render-build": "prisma generate && npx prisma db push"
   },
   "dependencies": {
-    "@prisma/client": "^5.17.0",
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "telegraf": "^4.16.3"
+    "@prisma/client": "5.22.0",
+    "body-parser": "1.20.2",
+    "cors": "2.8.5",
+    "express": "4.19.2",
+    "telegraf": "4.16.3"
   },
   "devDependencies": {
-    "prisma": "^5.17.0"
+    "prisma": "5.22.0"
   }
 }
