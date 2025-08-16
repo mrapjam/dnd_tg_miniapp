@@ -1,396 +1,407 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>DnD Mini App</title>
-  <style>
-    :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --txt:#e6eaf2; --muted:#9aa4b2; }
-    *{ box-sizing:border-box }
-    body{ margin:0; background:var(--bg); color:var(--txt); font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;}
-    header{ padding:16px 16px 0; }
-    h1{ margin:0 0 12px; font-size:20px; }
-    main{ padding:16px; display:grid; gap:16px; grid-template-columns: 1fr; }
-    @media (min-width: 900px){ main{ grid-template-columns: 360px 1fr; } }
-    .card{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; }
-    .row{ display:flex; align-items:center; gap:8px; flex-wrap:wrap }
-    .muted{ color:var(--muted) }
-    .btn{ background:#2a2f3a; border:1px solid #394354; padding:8px 12px; border-radius:10px; color:var(--txt); cursor:pointer }
-    .btn.small{ padding:4px 8px; font-size:13px }
-    .btn.good{ background:#244a32; border-color:#2b6642 }
-    .btn.warn{ background:#4a2a2a; border-color:#6a3a3a }
-    input, textarea, select{ background:#0f131b; border:1px solid #2a2f3a; color:var(--txt); padding:8px 10px; border-radius:10px; width:100% }
-    textarea{ min-height:70px; resize:vertical }
-    .col{ display:flex; flex-direction:column; gap:10px }
-    .list{ display:flex; flex-direction:column; gap:8px; }
-    .pill{ display:inline-block; padding:4px 10px; border:1px solid var(--line); background:#11151d; border-radius:999px; font-size:12px; }
-    .grid2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px }
-    .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px }
-    .hr{ height:1px; background:var(--line); margin:8px 0 }
-    .chat{ height:220px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:8px; background:#0f131b }
-    .item{ display:flex; justify-content:space-between; gap:10px; padding:8px; border:1px dashed var(--line); border-radius:10px; }
-    .tag{ font-size:12px; color:#c0c8d4 }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DnD Mini App</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --muted:#8a94a7; --acc:#4cc3ff; --ok:#46d37a; --bad:#ff5c7c; }
+  html,body { margin:0; padding:0; background:var(--bg); color:#e6edf3; font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial; }
+  .wrap { max-width:980px; margin:0 auto; padding:16px; }
+  .row{display:flex; gap:16px; flex-wrap:wrap}
+  .col{background:var(--panel); border:1px solid #222733; border-radius:12px; padding:14px; flex:1 1 320px; min-width:320px;}
+  .top {display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .badge {background:#222733; border:1px solid #2a3040; border-radius:10px; padding:6px 10px; font-size:12px; color:#c7cfdb}
+  h2{margin:0 0 8px 0; font-size:18px}
+  .btn{background:#202534; border:1px solid #2a3040; color:#dfe6f2; padding:10px 14px; border-radius:10px; cursor:pointer}
+  .btn:hover{border-color:#3b4258}
+  .btn.big{font-size:18px; padding:14px 18px}
+  .btn.primary{background:#243047; border-color:#304566}
+  .btn.good{background:#1f3b2d; border-color:#2b6a4c}
+  .btn.bad{background:#42232b; border-color:#7a3a48}
+  .pill{display:inline-block; padding:8px 12px; border:1px dashed #394255; border-radius:10px; color:#d0d7e3}
+  .field{display:flex; gap:8px; margin:8px 0}
+  input,textarea,select{background:#0e121b; color:#dfe6f2; border:1px solid #2a3040; border-radius:10px; padding:10px; flex:1}
+  textarea{min-height:70px}
+  .players .p{border:1px solid #2a3040; border-radius:10px; padding:8px; margin:8px 0}
+  .small{font-size:12px; color:#aab2c3}
+  .chat{max-height:260px; overflow:auto; border:1px solid #2a3040; border-radius:10px; padding:8px; background:#101521}
+  .msg{margin:4px 0}
+  .flex{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .avatar{width:36px; height:36px; border-radius:50%; object-fit:cover; border:1px solid #2a3040}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px}
+  .dicebar{display:flex; gap:8px; flex-wrap:wrap; margin:8px 0}
+  .hidden{display:none !important}
+  .divider{height:1px;background:#222733;margin:10px 0}
+</style>
 </head>
 <body>
-<header><h1>DnD Mini App</h1></header>
+<div class="wrap">
+  <div class="top">
+    <div id="you" class="badge">—</div>
+    <div id="code" class="badge">Код: —</div>
+  </div>
 
-<main>
-  <!-- ЛЕВАЯ КОЛОНКА -->
-  <section class="card col" id="left">
-    <div class="row" id="whoRow">
-      <div class="muted">Вы: <span id="who"></span></div>
-      <span class="pill">Код: <span id="gameCode">—</span></span>
+  <!-- Онбординг игрока -->
+  <div id="joinPanel" class="col">
+    <h2>Вход в лобби</h2>
+    <div class="small">Введите имя персонажа и выберите аватар. После входа станет доступен чат и ваш инвентарь.</div>
+    <div class="field"><input id="nameInput" placeholder="Ваше имя персонажа" /></div>
+
+    <div class="small" style="margin-top:6px">Аватар:</div>
+    <div class="field">
+      <input id="photoFile" type="file" accept="image/*" />
+    </div>
+    <div class="small">Или выберите один из вариантов:</div>
+    <div id="presetAvatars" class="flex"></div>
+    <div class="field">
+      <button class="btn primary" id="joinBtn">Войти в лобби</button>
+    </div>
+  </div>
+
+  <!-- Панель мастера -->
+  <div id="gmPanel" class="col hidden">
+    <h2>Панель мастера</h2>
+    <div class="small">Игроки:</div>
+    <div id="playersList" class="players"></div>
+
+    <div class="divider"></div>
+
+    <div class="small">Выдать предмет / На пол</div>
+    <div class="field"><input id="gmItemName" placeholder="Название предмета" /></div>
+    <div class="field">
+      <select id="gmGiveTo"></select>
+      <input id="gmQty" type="number" min="1" value="1" style="max-width:120px">
+    </div>
+    <div class="field">
+      <button class="btn" id="gmGiveBtn">➕ Выдать игроку</button>
+      <button class="btn" id="gmDropBtn">На пол</button>
     </div>
 
-    <div id="lobbyCard" class="card" style="background:#121720">
-      <h3>Лобби</h3>
-      <div id="lobbyJoin" class="col">
-        <div class="muted">Введите имя и войдите в лобби.</div>
-        <input id="nameInput" placeholder="Ваше имя"/>
-        <button class="btn" id="joinBtn">Войти в лобби</button>
-      </div>
-      <div id="lobbyInside" class="col" style="display:none">
-        <div class="list" id="playersList"></div>
-        <div class="hr"></div>
-        <div class="chat" id="chatBox"></div>
-        <div class="row">
-          <input id="chatInput" placeholder="Написать в лобби…"/>
-          <button class="btn small" id="chatSend">Отправить</button>
-        </div>
-      </div>
+    <div class="divider"></div>
+
+    <div class="small">Золото</div>
+    <div class="field">
+      <input id="gmGoldQty" type="number" min="1" value="1" style="max-width:120px">
+      <button class="btn" id="gmGoldDropBtn">Бросить золото на пол</button>
     </div>
 
-    <div class="card col">
-      <div class="muted">Локация: <b id="locationNow">—</b></div>
-      <div class="row">
-        <button class="btn small" data-die="6">🎲 d6</button>
-        <button class="btn small" data-die="8">🎲 d8</button>
-        <button class="btn small" data-die="20">🎲 d20</button>
-        <button class="btn small good" id="lookBtn">👀 Осмотреться</button>
-      </div>
-      <div id="rollsBox" class="list"></div>
+    <div class="divider"></div>
+
+    <div class="small">Локации</div>
+    <div class="field"><input id="locTitle" placeholder="Название локации"></div>
+    <div class="field"><textarea id="locDesc" placeholder="Описание локации"></textarea></div>
+    <div class="small">Картинка локации (по желанию):</div>
+    <div class="field"><input id="locImg" type="file" accept="image/*" /></div>
+    <div class="field">
+      <button class="btn" id="addLocBtn">➕ Добавить локацию</button>
+      <button class="btn primary" id="startGameBtn">▶ Начать игру</button>
+    </div>
+    <div class="small">Список локаций:</div>
+    <div id="locList" class="grid"></div>
+  </div>
+
+  <!-- Игрок (после старта игры показываем броски наверху) -->
+  <div id="playerPanel" class="col hidden">
+    <div id="diceBar" class="dicebar hidden">
+      <button class="btn big" data-d="6">🎲 d6</button>
+      <button class="btn big" data-d="8">🎲 d8</button>
+      <button class="btn big" data-d="20">🎲 d20</button>
     </div>
 
-    <!-- Панель мастера -->
-    <div class="card col" id="gmPanel" style="display:none">
-      <h3>Панель мастера</h3>
-      <div class="list" id="gmPlayers"></div>
-      <div class="hr"></div>
+    <div id="locBlock" class="hidden">
+      <h2>Локация</h2>
+      <div id="locName" class="pill">—</div>
+      <div class="field"><img id="locImage" class="hidden" style="width:100%;max-height:220px;object-fit:cover;border-radius:12px;border:1px solid #2a3040"></div>
+      <div id="locDescText" class="small" style="white-space:pre-wrap">—</div>
+      <div class="field"><button class="btn" id="lookBtn">👀 Осмотреться</button></div>
+      <div id="pickedInfo" class="small"></div>
+      <div class="divider"></div>
+    </div>
 
-      <div class="col">
-        <div class="muted">Выдать предмет или бросить на пол</div>
-        <input id="gmItemName" placeholder="Название предмета (меч, зелье…)">
-        <div class="row">
-          <select id="gmItemPlayer"></select>
-          <button class="btn small" id="gmGiveItem">Выдать игроку</button>
-          <button class="btn small" id="gmDropItem">На пол</button>
-        </div>
-      </div>
+    <div id="myInvBlock" class="hidden">
+      <h2>Мой инвентарь</h2>
+      <div id="myInv" class="grid"></div>
+      <div class="divider"></div>
+    </div>
 
-      <div class="hr"></div>
-
-      <div class="row">
-        <input id="gmGoldAmt" style="max-width:120px" value="1">
-        <button class="btn small" id="gmDropGold">Бросить золото на пол</button>
-      </div>
-
-      <div class="hr"></div>
-
-      <div class="col">
-        <div class="muted">Локации</div>
-        <div class="row">
-          <input id="locTitle" placeholder="Название локации">
-        </div>
-        <textarea id="locDesc" placeholder="Описание локации"></textarea>
-        <div class="row">
-          <button class="btn small" id="addLoc">+ Добавить локацию</button>
-          <button class="btn small good" id="startGame">▶ Начать игру</button>
-        </div>
-        <div class="list" id="locList"></div>
+    <div id="chatBlock" class="hidden">
+      <h2>Чат</h2>
+      <div id="chat" class="chat"></div>
+      <div class="field">
+        <input id="chatInput" placeholder="Сообщение…" />
+        <button class="btn" id="chatSend">Отправить</button>
       </div>
     </div>
-  </section>
-
-  <!-- ПРАВАЯ КОЛОНКА -->
-  <section class="card col">
-    <div class="col">
-      <h3>Инвентарь игры</h3>
-      <div id="gameItems" class="list"></div>
-    </div>
-    <div class="hr"></div>
-    <div class="col">
-      <h3>Мой инвентарь</h3>
-      <div id="myItems" class="list"></div>
-    </div>
-  </section>
-</main>
+  </div>
+</div>
 
 <script>
-  const tg = window.Telegram?.WebApp;
+const q = Object.fromEntries(new URL(location.href).searchParams.entries());
+const code = (q.code || '').toUpperCase();
+const meTgId = q.tgId || '';
+const meNameFromQuery = q.name || 'Hero';
+const api = (p, init={}) => fetch(`/api/games/${code}${p}`, init).then(r => r.json());
 
-  // a) из TG-контекста
-  let userFromTG = tg?.initDataUnsafe?.user;
-  // b) из query (бот теперь всегда добавляет их в URL кнопки)
-  const params = new URLSearchParams(location.search);
-  const tgIdFromUrl = params.get('tgId');
-  const nameFromUrl  = params.get('name');
+const you = document.getElementById('you');
+const codeBadge = document.getElementById('code');
+codeBadge.textContent = 'Код: ' + (code || '—');
+you.textContent = `Вы: ${meNameFromQuery} (#${meTgId || 'test'})`;
 
-  let user;
-  if (userFromTG?.id) {
-    user = { id: String(userFromTG.id), first_name: userFromTG.first_name || 'Hero' };
-  } else if (tgIdFromUrl) {
-    user = { id: String(tgIdFromUrl), first_name: nameFromUrl || 'Hero' };
-  } else {
-    user = { id: 'test', first_name: 'Hero' }; // крайний резерв
-  }
+// пресеты аватаров (dataURL встроены короткие SVG)
+const AVATARS = [
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%23333"/><circle cx="64" cy="48" r="26" fill="%23bde0fe"/><rect x="26" y="82" width="76" height="30" rx="14" fill="%23bde0fe"/></svg>',
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%232d233a"/><circle cx="64" cy="50" r="24" fill="%23ffd166"/><rect x="24" y="84" width="80" height="28" rx="14" fill="%23ffd166"/></svg>',
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%23202434"/><circle cx="64" cy="50" r="24" fill="%23ff6b6b"/><rect x="24" y="84" width="80" height="28" rx="14" fill="%23ff6b6b"/></svg>',
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%2318222f"/><circle cx="64" cy="50" r="24" fill="%2390ee90"/><rect x="24" y="84" width="80" height="28" rx="14" fill="%2390ee90"/></svg>',
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%23242a36"/><circle cx="64" cy="50" r="24" fill="%23ffa3d7"/><rect x="24" y="84" width="80" height="28" rx="14" fill="%23ffa3d7"/></svg>',
+  'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="100%" height="100%" fill="%232f2a1f"/><circle cx="64" cy="50" r="24" fill="%23a3d8ff"/><rect x="24" y="84" width="80" height="28" rx="14" fill="%23a3d8ff"/></svg>'
+];
 
-  const code = (params.get('code') || '').toUpperCase();
-  document.getElementById('who').textContent = `${user.first_name} (#${user.id})`;
-  document.getElementById('gameCode').textContent = code || '—';
+const el = (id)=>document.getElementById(id);
+const joinPanel = el('joinPanel');
+const gmPanel = el('gmPanel');
+const playerPanel = el('playerPanel');
+const diceBar = el('diceBar');
+const locBlock = el('locBlock');
+const myInvBlock = el('myInvBlock');
+const chatBlock = el('chatBlock');
 
-  if ((!userFromTG || !userFromTG.id) && !tgIdFromUrl) {
-    const warn = document.createElement('div');
-    warn.style.cssText = 'background:#3b1d1d;color:#ffb3b3;border:1px solid #5a2a2a;padding:10px;border-radius:8px;margin-bottom:10px';
-    warn.innerHTML = `<b>Мини‑аппа без Telegram‑контекста.</b> Откройте её из чата бота (команда <code>/app ${code||'КОД'}</code>).`;
-    document.querySelector('#left').prepend(warn);
-  }
+const presetWrap = el('presetAvatars');
+let chosenAvatar = null;
+AVATARS.forEach(src=>{
+  const i = new Image(); i.src = src; i.className='avatar'; i.style.cursor='pointer';
+  i.onclick = ()=>{ chosenAvatar = src; [...presetWrap.children].forEach(c=>c.style.outline=''); i.style.outline='2px solid #4cc3ff'; }
+  presetWrap.appendChild(i);
+});
 
-  const API = {
-    game:   () => fetch(`/api/games/${code}?tgId=${encodeURIComponent(user.id)}`).then(r=>r.json()),
-    join:   (name) => fetch(`/api/games/${code}/join`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tgId:user.id, name})}).then(r=>r.json()),
-    msgs:   () => fetch(`/api/games/${code}/messages`).then(r=>r.json()),
-    sendMsg:(text)=> fetch(`/api/games/${code}/messages`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tgId:user.id, name:user.first_name, text})}).then(r=>r.json()),
-    roll:   (die)=> fetch(`/api/games/${code}/roll`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tgId:user.id, die})}).then(r=>r.json()),
-    items:  (ownerTgId)=> fetch(`/api/games/${code}/items${ownerTgId?`?ownerTgId=${ownerTgId}`:''}`).then(r=>r.json()),
-    dropGold:(amt)=> fetch(`/api/games/${code}/gold/drop`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({amount:amt})}).then(r=>r.json()),
-    giveItem:(name, ownerTgId)=> fetch(`/api/games/${code}/items`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, ownerTgId})}).then(r=>r.json()),
-    dropItem:(name)=> fetch(`/api/games/${code}/items`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}).then(r=>r.json()),
-    transfer:(itemId, toTg)=> fetch(`/api/games/${code}/items/${itemId}/transfer`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({toTgId:toTg})}).then(r=>r.json()),
-    delItem:(itemId)=> fetch(`/api/games/${code}/items/${itemId}`, {method:'DELETE'}).then(r=>r.json()),
-    look:   ()=> fetch(`/api/games/${code}/look-around`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tgId:user.id})}).then(r=>r.json()),
-    updPlayer:(tgId, data)=> fetch(`/api/games/${code}/players/${tgId}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)}).then(r=>r.json()),
-    locs:    ()=> fetch(`/api/games/${code}/locations`).then(r=>r.json()),
-    addLoc:  (title, description)=> fetch(`/api/games/${code}/locations`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, description})}).then(r=>r.json()),
-    start:   ()=> fetch(`/api/games/${code}/start`, {method:'POST'}).then(r=>r.json()),
-    makeCurrent:(locId)=> fetch(`/api/games/${code}/locations/${locId}/make-current`, {method:'POST'}).then(r=>r.json()),
-  };
+async function fileToDataUrl(file){
+  if(!file) return null;
+  const b = await file.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(b)));
+  return `data:${file.type};base64,${base64}`;
+}
 
-  const el = id => document.getElementById(id);
+// --- state + UI ---
+let state = null;
+async function loadState(){
+  if(!code) return;
+  const r = await api(`?tgId=${encodeURIComponent(meTgId)}`);
+  state = r;
 
-  // UI handlers
-  el('joinBtn').onclick = async () => {
-    const name = el('nameInput').value.trim() || user.first_name || 'Hero';
-    const r = await API.join(name);
-    if (r?.ok) {
-      user.first_name = name;
-      reloadAll();
-    } else alert('Не удалось войти в лобби');
-  };
+  const isGM = !!r.isGM;
+  const joined = !!r.joined;
+  const started = r.status === 'started';
 
-  el('chatSend').onclick = async () => {
-    const t = el('chatInput').value.trim();
-    if (!t) return;
-    await API.sendMsg(t);
-    el('chatInput').value = '';
-    loadChat();
-  };
+  // Онбординг: если не вошёл в лобби — показываем только join
+  joinPanel.classList.toggle('hidden', joined);
+  gmPanel.classList.toggle('hidden', !isGM);
+  playerPanel.classList.toggle('hidden', !joined && !isGM);
 
-  document.querySelectorAll('[data-die]').forEach(b=>{
-    b.onclick = async ()=> {
-      const die = Number(b.dataset.die);
-      const r = await API.roll(die);
-      if (r?.result) loadRolls();
-    }
-  });
-  el('lookBtn').onclick = async ()=> { await API.look(); reloadAll(); };
+  // Игрок: после входа в лобби показываем чат + мой инвентарь; после старта ещё и локацию + большие кубики
+  diceBar.classList.toggle('hidden', !(joined && started));
+  locBlock.classList.toggle('hidden', !(joined && started));
+  myInvBlock.classList.toggle('hidden', !joined);
+  chatBlock.classList.toggle('hidden', !joined);
 
-  // GM buttons
-  el('gmGiveItem').onclick = async ()=>{
-    const name = el('gmItemName').value.trim();
-    const to = el('gmItemPlayer').value;
-    if (!name || !to) return;
-    await API.giveItem(name, to);
-    el('gmItemName').value = '';
-    reloadAll();
-  };
-  el('gmDropItem').onclick = async ()=>{
-    const name = el('gmItemName').value.trim();
-    if (!name) return;
-    await API.dropItem(name);
-    el('gmItemName').value = '';
-    reloadAll();
-  };
-  el('gmDropGold').onclick = async ()=>{
-    const n = Number(el('gmGoldAmt').value || 1);
-    await API.dropGold(n);
-    reloadAll();
-  };
-  el('addLoc').onclick = async ()=>{
-    const t = el('locTitle').value.trim();
-    const d = el('locDesc').value.trim();
-    if (!t) return;
-    await API.addLoc(t, d);
-    el('locTitle').value=''; el('locDesc').value='';
-    loadLocs();
-  };
-  el('startGame').onclick = async ()=>{ await API.start(); reloadAll(); };
+  // ГМ: «осмотреться» у него нет — и не будет в UI
 
-  // loaders
-  async function loadGame() {
-    if (!code) return;
-    const g = await API.game();
-    if (g?.error) return;
-
-    // GM?
-    el('gmPanel').style.display = g.isGM ? '' : 'none';
-
-    // Лобби/чат
-    const meIn = (g.players||[]).some(p=> String(p.tgId)===String(user.id));
-    el('lobbyJoin').style.display = meIn ? 'none' : '';
-    el('lobbyInside').style.display = meIn ? '' : 'none';
-
-    // Игроки список (виден всем)
-    const list = el('playersList'); list.innerHTML='';
-    (g.players||[]).forEach(p=>{
-      const row = document.createElement('div');
-      row.className='item';
-      row.innerHTML = `<div><b>${p.name}</b> <span class="tag">#${p.tgId}</span><br>HP: ${p.hp} • Gold: ${p.gold}</div>`;
-      list.appendChild(row);
-    });
-
-    // GM: управление игроками
-    if (g.isGM) {
-      const gp = el('gmPlayers'); gp.innerHTML='';
-      (g.players||[]).forEach(p=>{
-        const d = document.createElement('div');
-        d.className='item';
-        d.innerHTML = `
-          <div><b>${p.name}</b> <span class="tag">#${p.tgId}</span><br>HP: ${p.hp} • Gold: ${p.gold}</div>
-          <div class="row">
-            <button class="btn small" data-a="hp-" data-id="${p.tgId}">-HP</button>
-            <button class="btn small" data-a="hp+" data-id="${p.tgId}">+HP</button>
-            <button class="btn small" data-a="gold+" data-id="${p.tgId}">+Gold</button>
-            <button class="btn small" data-a="gold-" data-id="${p.tgId}">-Gold</button>
+  // заполнить список игроков (для ГМа)
+  if(isGM){
+    const list = el('playersList');
+    list.innerHTML = '';
+    r.players.forEach(p=>{
+      const d = document.createElement('div'); d.className='p';
+      d.innerHTML = `
+        <div class="flex">
+          ${p.photo ? `<img class="avatar" src="${p.photo}">` : `<div class="avatar" style="background:#222"></div>`}
+          <div><b>${p.name}</b> <span class="small">(#${p.userTgId})</span><br>
+            <span class="small">HP: ${p.hp} • Gold: ${p.gold}</span>
           </div>
-        `;
-        gp.appendChild(d);
-      });
-      gp.querySelectorAll('button').forEach(b=>{
-        b.onclick = async ()=>{
-          const tgId = b.dataset.id;
-          const a = b.dataset.a;
-          const pl = (g.players||[]).find(x=> String(x.tgId)===String(tgId));
-          if (!pl) return;
-          if (a==='hp-')  await API.updPlayer(tgId, { hp: pl.hp-1 });
-          if (a==='hp+')  await API.updPlayer(tgId, { hp: pl.hp+1 });
-          if (a==='gold+')await API.updPlayer(tgId, { gold: pl.gold+1 });
-          if (a==='gold-')await API.updPlayer(tgId, { gold: Math.max(0, pl.gold-1) });
-          reloadAll();
-        }
-      });
+        </div>
+        <div class="field">
+          <button class="btn bad" data-act="hp-" data-id="${p.userTgId}">-HP</button>
+          <button class="btn good" data-act="hp+" data-id="${p.userTgId}">+HP</button>
+          <button class="btn" data-act="gold+" data-id="${p.userTgId}">+Gold</button>
+          <button class="btn" data-act="gold-" data-id="${p.userTgId}">-Gold</button>
+        </div>
+        <div class="field"><textarea placeholder="Описание игрока…" data-note="${p.userTgId}">${p.note||''}</textarea></div>
+        <div class="field"><button class="btn" data-act="save-note" data-id="${p.userTgId}">💾 Сохранить описание</button></div>
+      `;
+      list.appendChild(d);
+    });
 
-      // селект игрока для выдачи
-      const sel = el('gmItemPlayer'); sel.innerHTML = '<option value="">— Выбрать игрока —</option>';
-      (g.players||[]).forEach(p=>{
-        const o = document.createElement('option');
-        o.value = p.tgId; o.textContent = `${p.name} (#${p.tgId})`;
-        sel.appendChild(o);
-      });
-    }
+    // выпадающий список «выдать игроку»
+    const sel = el('gmGiveTo');
+    sel.innerHTML = '<option value="">— выбрать игрока —</option>';
+    r.players.forEach(p=>{
+      const o = document.createElement('option');
+      o.value = p.userTgId; o.textContent = `${p.name} (#${p.userTgId})`;
+      sel.appendChild(o);
+    });
 
-    // Текущая локация
-    el('locationNow').textContent = g.currentLocation ? g.currentLocation.title : '—';
+    // список локаций
+    const locList = el('locList'); locList.innerHTML = '';
+    const locs = await api('/locations');
+    locs.forEach(l=>{
+      const card = document.createElement('div');
+      card.className='p';
+      card.innerHTML = `
+        <div><b>${l.title}</b></div>
+        ${l.image ? `<div style="margin:6px 0"><img src="${l.image}" style="width:100%;max-height:140px;object-fit:cover;border-radius:8px;border:1px solid #2a3040"></div>`:''}
+        <div class="small" style="white-space:pre-wrap">${l.description||''}</div>
+        <div class="field"><button class="btn" data-make="${l.id}">Сделать текущей</button></div>
+      `;
+      locList.appendChild(card);
+    });
+    locList.onclick = async (e)=>{
+      const id = e.target?.dataset?.make;
+      if(!id) return;
+      await api(`/locations/${id}/make-current`, { method:'POST' });
+      await loadState();
+    };
 
-    // Локации список (в GM панели)
-    await loadLocs();
+    // слушатели на HP/Gold/Note
+    el('playersList').onclick = async (e)=>{
+      const act = e.target?.dataset?.act;
+      const id  = e.target?.dataset?.id;
+      if(!act || !id) return;
 
-    // Инвентарь
-    await loadItems();
-    await loadMyItems();
+      const p = r.players.find(x=>x.userTgId===id);
+      if(!p) return;
 
-    // Броски
-    await loadRolls();
-  }
-
-  async function loadLocs() {
-    if (!code) return;
-    const locs = await API.locs();
-    const box = el('locList'); box.innerHTML='';
-    (locs||[]).forEach(l=>{
-      const row = document.createElement('div'); row.className='item';
-      row.innerHTML = `<div><b>${l.title}</b><div class="muted" style="max-width:520px">${l.description||''}</div></div>`;
-      if (el('gmPanel').style.display!=='none') {
-        const btn = document.createElement('button');
-        btn.className='btn small'; btn.textContent='Сделать текущей';
-        btn.onclick = async ()=>{ await API.makeCurrent(l.id); reloadAll(); };
-        row.appendChild(btn);
+      if(act==='hp-'||act==='hp+'){
+        const hp = p.hp + (act==='hp+'? +1 : -1);
+        await api(`/players/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ hp }) });
       }
-      box.appendChild(row);
-    })
-  }
-
-  async function loadChat() {
-    const msgs = await API.msgs();
-    const box = el('chatBox'); box.innerHTML='';
-    (msgs||[]).reverse().forEach(m=>{
-      const div = document.createElement('div');
-      div.innerHTML = `<b>${m.name}</b>: ${m.text} <span class="muted" style="font-size:12px">(${new Date(m.at).toLocaleTimeString()})</span>`;
-      box.appendChild(div);
-    });
-    box.scrollTop = box.scrollHeight;
-  }
-
-  async function loadRolls() {
-    const g = await API.game();
-    const box = el('rollsBox'); box.innerHTML='';
-    (g.rolls||[]).forEach(r=>{
-      const div = document.createElement('div');
-      div.className='item';
-      div.innerHTML = `<div>🎲 ${r.name} бросил d${r.die}: <b>${r.result}</b></div><div class="muted">${new Date(r.at).toLocaleTimeString()}</div>`;
-      box.appendChild(div);
-    });
-  }
-
-  async function loadItems() {
-    const items = await API.items();
-    const box = el('gameItems'); box.innerHTML='';
-    (items||[]).filter(i=>i.locationId).forEach(i=>{
-      const row = document.createElement('div'); row.className='item';
-      row.innerHTML = `<div><b>${i.name}</b> ${i.type==='gold'?`<span class="tag">Золото ×${i.qty}</span>`:''}</div>`;
-      if (el('gmPanel').style.display!=='none') {
-        const d = document.createElement('button'); d.className='btn small warn'; d.textContent='Удалить';
-        d.onclick = async ()=>{ await API.delItem(i.id); reloadAll(); };
-        row.appendChild(d);
+      if(act==='gold-'||act==='gold+'){
+        const gold = p.gold + (act==='gold+'? +1 : -1);
+        await api(`/players/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ gold }) });
       }
-      box.appendChild(row);
+      if(act==='save-note'){
+        const ta = el('playersList').querySelector(`textarea[data-note="${id}"]`);
+        await api(`/players/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ note: ta.value }) });
+      }
+      await loadState();
+    };
+  }
+
+  // текущая локация (для игрока)
+  if(r.currentLocation){
+    el('locName').textContent = r.currentLocation.title;
+    el('locDescText').textContent = r.currentLocation.description || '';
+    if(r.currentLocation.image){
+      el('locImage').src = r.currentLocation.image;
+      el('locImage').classList.remove('hidden');
+    } else el('locImage').classList.add('hidden');
+  } else {
+    el('locName').textContent = '—';
+    el('locDescText').textContent = '—';
+    el('locImage').classList.add('hidden');
+  }
+
+  // инвентарь игрока
+  if(r.joined){
+    const inv = await api(`/items?ownerTgId=${encodeURIComponent(meTgId)}`);
+    const box = el('myInv'); box.innerHTML = '';
+    if(inv.length===0) box.innerHTML = `<div class="small">Пока пусто</div>`;
+    inv.forEach(it=>{
+      const d = document.createElement('div'); d.className='p';
+      d.innerHTML = `<b>${it.name}</b>${it.qty>1?` ×${it.qty}`:''}<div class="small">${it.type}</div>`;
+      box.appendChild(d);
     });
   }
 
-  async function loadMyItems() {
-    const items = await API.items(user.id);
-    const box = el('myItems'); box.innerHTML='';
-    (items||[]).forEach(i=>{
-      const row = document.createElement('div'); row.className='item';
-      row.innerHTML = `<div><b>${i.name}</b> ${i.type==='gold'?`<span class="tag">Золото ×${i.qty}</span>`:''}</div>`;
-      box.appendChild(row);
+  // чат (внизу)
+  if(r.joined){
+    const msgs = await api('/messages');
+    const chat = el('chat'); chat.innerHTML='';
+    msgs.forEach(m=>{
+      const d = document.createElement('div'); d.className='msg';
+      d.innerHTML = `<span class="small"><b>${m.name}</b>:</span> ${m.text}`;
+      chat.appendChild(d);
     });
+    chat.scrollTop = chat.scrollHeight;
   }
+}
 
-  function reloadAll() { loadGame(); loadChat(); }
+// действия ГМа
+el('gmGiveBtn').onclick = async ()=>{
+  const name = el('gmItemName').value.trim(); if(!name) return;
+  const ownerTgId = el('gmGiveTo').value || null;
+  const qty = Number(el('gmQty').value||1);
+  await api('/items', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, qty, ownerTgId }) });
+  el('gmItemName').value='';
+  await loadState();
+};
+el('gmDropBtn').onclick = async ()=>{
+  const name = el('gmItemName').value.trim(); if(!name) return;
+  const qty = Number(el('gmQty').value||1);
+  await api('/items', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, qty, ownerTgId:null }) });
+  el('gmItemName').value='';
+  await loadState();
+};
+el('gmGoldDropBtn').onclick = async ()=>{
+  const amount = Number(el('gmGoldQty').value||1);
+  await api('/gold/drop', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount }) });
+  await loadState();
+};
 
-  // авто‑обновление
-  setInterval(reloadAll, 3000);
+// локации: добавить + начать
+el('addLocBtn').onclick = async ()=>{
+  const title = el('locTitle').value.trim(); if(!title) return;
+  const description = el('locDesc').value;
+  let image = null;
+  const file = el('locImg').files[0];
+  if(file) image = await fileToDataUrl(file);
+  await api('/locations', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title, description, image }) });
+  el('locTitle').value=''; el('locDesc').value=''; el('locImg').value='';
+  await loadState();
+};
+el('startGameBtn').onclick = async ()=>{ await api('/start', { method:'POST' }); await loadState(); };
 
-  // стартовый прогон
-  (async () => {
-    // если зашли по голой ссылке без кода — создадим игру для ГМа
-    if (!code) {
-      // ничего не делаем — показать только подсказку
-    }
-    await loadGame();
-    await loadChat();
-  })();
+// вход в лобби (имя + аватар)
+el('joinBtn').onclick = async ()=>{
+  const name = el('nameInput').value.trim() || 'Hero';
+  let photo = chosenAvatar;
+  const f = el('photoFile').files[0];
+  if(f) photo = await fileToDataUrl(f);
+  await api('/join', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tgId: meTgId, name, photo }) });
+  await loadState();
+};
+
+// броски (крупные кнопки)
+diceBar.onclick = async (e)=>{
+  const d = Number(e.target?.dataset?.d); if(!d) return;
+  const res = await api('/roll', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tgId: meTgId, die: d }) });
+  if(res?.result!=null){
+    const info = el('pickedInfo');
+    info.textContent = `Бросок d${d}: ${res.result}`;
+    setTimeout(()=>info.textContent='', 2000);
+  }
+};
+
+// осмотреться: забираем по одному предмету
+el('lookBtn').onclick = async ()=>{
+  const res = await api('/look-around', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tgId: meTgId }) });
+  const info = el('pickedInfo');
+  if(res?.picked) info.textContent = `Подобрано: ${res.picked.name}${res.picked.qty>1?' ×'+res.picked.qty:''}`;
+  else info.textContent = `Здесь ничего не найдено.`;
+  setTimeout(()=>info.textContent='', 2000);
+  await loadState();
+};
+
+// чат
+el('chatSend').onclick = async ()=>{
+  const t = el('chatInput').value.trim(); if(!t) return;
+  await api('/messages', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tgId: meTgId, name: (state?.me?.name||meNameFromQuery), text: t }) });
+  el('chatInput').value='';
+  await loadState();
+};
+
+// polling простенький
+setInterval(()=>{ if(code) loadState(); }, 4000);
+loadState();
 </script>
 </body>
 </html>
