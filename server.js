@@ -17,6 +17,7 @@ const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || ("telegraf-" + Math.random().toString(16).slice(2, 8));
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+const pendingJoinUsers = new Set(); // набор userId, для кого ждём код
 
 const app = express();
 app.use(cors());
@@ -61,37 +62,56 @@ const mem = {
 // ---------- DAL ----------
 const DAL = {
   // Создать игру
-  async createGame(gmId) {
-    const code = genCode();
-    const now = new Date();
-    if (!prisma) {
-      mem.games.set(code, {
-        code,
-        gmId,
-        started: false,
-        createdAt: nowTs(),
-        expiresAt: nowTs() + SIX_HOURS_MS,
-        locationId: null,
-        players: new Map(),
-        floor: [],
-        chat: [],
-        locations: new Map(),
-      });
-      return { code };
+async createGame(gmId) {
+  const now = new Date();
+
+  // In-memory режим
+  if (!prisma) {
+    let code;
+    for (let i = 0; i < 10; i++) {
+      const candidate = genCode();
+      if (!mem.games.has(candidate)) { code = candidate; break; }
     }
-    const game = await prisma.game.create({
-      data: {
-        code,
-        gmId,
-        started: false,
-        createdAt: now,
-        lastActivity: now,
-        expiresAt: addMs(now, SIX_HOURS_MS),
-      },
-      select: { code: true },
+    if (!code) throw new Error("code generation failed");
+
+    mem.games.set(code, {
+      code,
+      gmId,
+      started: false,
+      createdAt: nowTs(),
+      expiresAt: nowTs() + SIX_HOURS_MS,
+      locationId: null,
+      players: new Map(),
+      floor: [],
+      chat: [],
+      locations: new Map(),
     });
-    return game;
-  },
+    return { code };
+  }
+
+  // Prisma: ретрай при P2002 (уникальный код уже есть)
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = genCode();
+    try {
+      const game = await prisma.game.create({
+        data: {
+          code,
+          gmId,
+          started: false,
+          createdAt: now,
+          lastActivity: now,
+          expiresAt: addMs(now, SIX_HOURS_MS),
+        },
+        select: { code: true },
+      });
+      return game;
+    } catch (e) {
+      if (e?.code === "P2002") continue; // коллизия — пробуем новый код
+      throw e; // другая ошибка — пробрасываем
+    }
+  }
+  throw new Error("failed to create unique code");
+},
 
   // Получить игру + проверить TTL
   async getGame(code) {
@@ -645,24 +665,39 @@ if (BOT_TOKEN) {
     await ctx.reply("Dnd Mini App. Выбери действие:", kb);
   });
 
-  bot.command("new", async (ctx) => {
-    const gmId = String(ctx.from.id);
-    try {
-      const g = await DAL.createGame(gmId);
-      await ctx.reply(`Создан новый код комнаты: ${g.code}\nОткрой мини‑апп и поделись кодом.`);
-    } catch (e) {
-      await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
-    }
-  });
+ bot.command("new", async (ctx) => {
+  const gmId = String(ctx.from.id);
+  try {
+    const g = await DAL.createGame(gmId);
+    await ctx.reply(`Создана игра. Код: ${g.code}\nОткрой мини‑апп и продолжай.`);
+  } catch (e) {
+    console.error("NEW failed:", e?.code, e?.message);
+    await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
+  }
+});
 
   bot.command("join", async (ctx) => {
-    await ctx.reply("Введи код комнаты (6 символов):");
+  const uid = String(ctx.from.id);
+  pendingJoinUsers.add(uid);
+  await ctx.reply("Введи код комнаты (6 символов):");
+});
     bot.on("text", async (inner) => {
       const code = (inner.message.text || "").trim().toUpperCase();
       if (!/^[A-Z0-9]{6}$/.test(code)) return;
       await inner.reply(`Код принят: ${code}. Открой мини‑апп и войди в лобби.`);
     });
   });
+bot.on("text", async (ctx) => {
+  const uid = String(ctx.from.id);
+  if (!pendingJoinUsers.has(uid)) return; // не ждём — игнор
+  const code = (ctx.message.text || "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{6}$/.test(code)) {
+    await ctx.reply("Код должен быть 6 символов (латиница/цифры). Попробуй ещё раз.");
+    return;
+  }
+  pendingJoinUsers.delete(uid);
+  await ctx.reply(`Код принят: ${code}. Открой мини‑апп и войди в лобби.`);
+});
 
   app.use(bot.webhookCallback(`/telegraf/${BOT_SECRET_PATH}`));
   const hookUrl = `${APP_URL}/telegraf/${BOT_SECRET_PATH}`;
