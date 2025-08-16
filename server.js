@@ -1,106 +1,111 @@
-// server.js — Telegraf + Express с корректным вебхуком
+// server.js — минимально-рабочий webhook-сервер Telegraf
 
 import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
+import cors from "cors";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 
 dotenv.config();
 
-// ────────────────────────────────────────────────────────────
-// Константы окружения
-// ────────────────────────────────────────────────────────────
+// ====== НАСТРОЙКИ ======
 const PORT = process.env.PORT || 10000;
-const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
-const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// Секретная часть пути вебхука (фиксированное значение, чтобы совпало с тем,
-// что видим в getWebhookInfo: ".../telegraf/telegraf-9f2c1a")
+// В .env/Render ENV задай APP_URL = https://dnd-tg-miniapp.onrender.com (БЕЗ слеша в конце)
+const RAW_APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+const APP_URL = RAW_APP_URL.replace(/\/+$/, ""); // убираем завершающий слеш
+
+// Твой токен
+const BOT_TOKEN = process.env.BOT_TOKEN || "7496680205:AAFn9GaZEysoBJmyVohLmzQiZDayCGmKlBs";
+
+// ВАЖНО: один и тот же путь в Express + setWebhook!
 const WEBHOOK_PATH = "/telegraf/telegraf-9f2c1a";
 const WEBHOOK_URL = `${APP_URL}${WEBHOOK_PATH}`;
 
-// ────────────────────────────────────────────────────────────
-// Базовые проверки
-// ────────────────────────────────────────────────────────────
-if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN is missing. Set it in environment variables.");
+// ====== EXPRESS ======
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Простой корень, чтобы не было “Cannot GET /”
+app.get("/", (req, res) => {
+  res.status(200).send("OK");
+});
+
+// ВАЖНО: Telegram дергает POST по webhook-пути. Мы ещё вернём 200 и на GET,
+// чтобы ваши ручные проверки не видели 404.
+app.get(WEBHOOK_PATH, (req, res) => {
+  res.status(200).send("Webhook OK (GET)");
+});
+
+// ====== BOT (Telegraf) ======
+if (!BOT_TOKEN || !/^(\d+):[\w-]+$/.test(BOT_TOKEN)) {
+  console.error("❌ BOT_TOKEN пустой или некорректный. Проверь переменные окружения.");
   process.exit(1);
 }
 
-// ────────────────────────────────────────────────────────────
-const app = express();
-app.use(express.json());
+const bot = new Telegraf(BOT_TOKEN, {
+  // Оставляем стандартные настройки
+});
 
-// __dirname для ESM
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Отдача статики мини‑аппа (если используешь папку webapp с index.html)
-const WEB_DIR = path.join(__dirname, "webapp");
-app.use(express.static(WEB_DIR));
-
-// health‑чек
-app.get("/", (_req, res) => res.send("Bot is running 🚀"));
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
-
-// ────────────────────────────────────────────────────────────
-// Инициализация бота
-// ────────────────────────────────────────────────────────────
-const bot = new Telegraf(BOT_TOKEN);
-
-// Простейшая команда /start
+// Команды для проверки
 bot.start(async (ctx) => {
   try {
     await ctx.reply(
-      "Dnd Mini App. Нажми, чтобы открыть мини‑приложение:",
+      "Dnd Mini App: бот жив. Используй /new для генерации кода мини-аппа.",
       Markup.inlineKeyboard([
-        Markup.button.webApp("Открыть мини‑апп", APP_URL),
+        Markup.button.url("Открыть мини-апп", `${APP_URL}/?code=${genCode()}`)
       ])
     );
   } catch (e) {
-    console.error("Error on /start:", e);
+    console.error("start error:", e);
   }
 });
 
-// Пример: /new (просто подтверждаем, что бот жив)
 bot.command("new", async (ctx) => {
-  await ctx.reply("Команда /new получена ✅. (Тест вебхука)");
+  const code = genCode();
+  try {
+    await ctx.reply(
+      `Создана игра. Код: ${code}\nОткрой мини‑апп и продолжай.`,
+      Markup.inlineKeyboard([
+        Markup.button.url("Открыть мини‑апп", `${APP_URL}/?code=${code}`)
+      ])
+    );
+  } catch (e) {
+    console.error("new error:", e);
+    await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
+  }
 });
 
-// Логируем все апдейты (на первых порах полезно)
+// Хэндлер на всё остальное — просто молчим/логируем
 bot.on("message", (ctx) => {
-  console.log("Update: message from", ctx.from?.id, "text:", ctx.message?.text);
+  console.log("Update:", ctx.updateType);
 });
 
-// Повесили обработчик вебхука на ТОТ ЖЕ путь
-app.use(WEBHOOK_PATH, bot.webhookCallback(WEBHOOK_PATH));
+// ====== ПОДКЛЮЧАЕМ WEBHOOK В EXPRESS ======
+app.use(bot.webhookCallback(WEBHOOK_PATH));
 
-// ────────────────────────────────────────────────────────────
-// Старт сервера + установка вебхука
-// ────────────────────────────────────────────────────────────
-async function bootstrap() {
-  // Запускаем http‑сервер
-  app.listen(PORT, async () => {
-    console.log(`🌐 Web server on ${PORT}`);
-    try {
-      // Сначала удалим старый вебхук (если был)
-      await bot.telegram.deleteWebhook().catch(() => {});
-      // Ставим новый на точный URL
-      await bot.telegram.setWebhook(WEBHOOK_URL);
-      console.log("🔗 Webhook set:", WEBHOOK_URL);
+// ====== СТАРТ СЕРВЕРА И УСТАНОВКА ВЕБХУКА ======
+app.listen(PORT, async () => {
+  console.log(`🌐 Web server on ${PORT}`);
+  try {
+    // снимаем старый вебхук на всякий
+    await bot.telegram.deleteWebhook().catch(() => {});
 
-      // Проверим, что Telegram его видит
-      const info = await bot.telegram.getWebhookInfo();
-      console.log("ℹ️ getWebhookInfo:", info);
-    } catch (err) {
-      console.error("❌ Failed to set webhook:", err);
-    }
-  });
+    // ставим новый
+    await bot.telegram.setWebhook(WEBHOOK_URL, {
+      drop_pending_updates: true
+    });
+
+    // проверяем что Telegram принял адрес
+    const info = await bot.telegram.getWebhookInfo();
+    console.log("🔗 Webhook set:", info.url || WEBHOOK_URL);
+  } catch (e) {
+    console.error("Failed to set webhook:", e);
+  }
+});
+
+// ====== utils ======
+function genCode() {
+  return Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(2, 8);
 }
-
-bootstrap().catch((e) => console.error("Bootstrap error:", e));
-
-// Без graceful‑shutdown Render иногда долго держит процесс
-process.on("unhandledRejection", (e) => console.error("UNHANDLED:", e));
-process.on("uncaughtException", (e) => console.error("UNCAUGHT:", e));
