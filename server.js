@@ -1,394 +1,501 @@
 // server.js
 import express from "express";
 import cors from "cors";
+import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
 import { PrismaClient } from "@prisma/client";
 import { Telegraf, Markup } from "telegraf";
 
 dotenv.config();
 
-/* -------------------- PATHS / ENV -------------------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 10000);
+// ─────────────────────────────────────────────────────────────
+// ENV
+// ─────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 10000;
 const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
-const BOT_TOKEN = process.env.BOT_TOKEN || "";
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const BOT_SECRET_PATH =
-  process.env.BOT_SECRET_PATH || `telegraf-${Math.random().toString(36).slice(2)}`;
-
+  process.env.BOT_SECRET_PATH || ("telegraf-" + Math.random().toString(36).slice(2));
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
-/* -------------------- EXPRESS -------------------- */
+// ─────────────────────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Раздаём мини‑аппу из /webapp
+const prisma = new PrismaClient();
+
+// статика мини-приложения
 const WEB_DIR = path.join(__dirname, "webapp");
-app.use("/assets", express.static(path.join(WEB_DIR, "assets")));
-app.get("/", (_req, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
+app.use(express.static(WEB_DIR));
+app.get("/", (_, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
 
-/* -------------------- PRISMA (ленивое подключение, безопасно) -------------------- */
-let prisma = null;
-async function tryConnectPrisma() {
-  try {
-    const p = new PrismaClient();
-    await p.$connect();
-    prisma = p;
-    console.log("✅ Prisma connected");
-  } catch (e) {
-    prisma = null;
-    console.warn("⚠️ Prisma unavailable, using in‑memory:", e?.code || e?.message);
-  }
-}
-await tryConnectPrisma();
-
-/* -------------------- IN-MEMORY FALLBACK -------------------- */
-const mem = {
-  games: new Map(),
-};
-
+// ─────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────
 const nowTs = () => Date.now();
-const addMs = (d, ms) => new Date(d.getTime() + ms);
 const genCode = () =>
-  Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(2, 8).padEnd(6, "0");
+  Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(2, 8);
 
-/* -------------------- DAL -------------------- */
-const DAL = {
-  ensureMemGame(code, patch = {}) {
-    if (!mem.games.has(code)) {
-      mem.games.set(code, {
-        code,
-        gmId: patch.gmId || "0",
-        started: patch.started ?? false,
-        createdAt: patch.createdAt ? +patch.createdAt : nowTs(),
-        expiresAt: patch.expiresAt ? +patch.expiresAt : nowTs() + SIX_HOURS_MS,
-        players: new Map(),
-        messages: [],
-      });
-    }
-    return mem.games.get(code);
-  },
+function isGM(game, tgId) {
+  return String(game.gmId) === String(tgId);
+}
 
-  async createGame(gmId) {
-    const now = new Date();
+async function gameByCode(code) {
+  return prisma.game.findUnique({
+    where: { code },
+  });
+}
 
-    if (!prisma) {
-      let code = genCode();
-      while (mem.games.has(code)) code = genCode();
-      mem.games.set(code, {
-        code,
-        gmId,
-        started: false,
-        createdAt: nowTs(),
-        expiresAt: nowTs() + SIX_HOURS_MS,
-        players: new Map(),
-        messages: [],
-      });
-      return { code, storage: "memory" };
-    }
-
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const code = genCode();
-      try {
-        const game = await prisma.game.create({
-          data: {
-            code,
-            gmId,
-            started: false,
-            createdAt: now,
-            lastActivity: now,
-            expiresAt: addMs(now, SIX_HOURS_MS),
-          },
-          select: { code: true },
-        });
-        return { code: game.code, storage: "db" };
-      } catch (e) {
-        if (e?.code === "P2002") continue; // коллизия кода — пробуем ещё
-        console.warn("DB error on /new, fallback to memory:", e?.code || e?.message);
-        mem.games.set(code, {
-          code,
-          gmId,
-          started: false,
-          createdAt: nowTs(),
-          expiresAt: nowTs() + SIX_HOURS_MS,
-          players: new Map(),
-          messages: [],
-        });
-        return { code, storage: "memory-fallback" };
-      }
-    }
-    throw new Error("FAILED_UNIQUE_CODE");
-  },
-
-  async getGame(code) {
-    if (!code) return null;
-
-    if (mem.games.has(code)) {
-      const g = mem.games.get(code);
-      return {
-        code: g.code,
-        gmId: g.gmId,
-        started: g.started,
-        createdAt: new Date(g.createdAt),
-        expiresAt: new Date(g.expiresAt),
-        players: Array.from(g.players.entries()).map(([id, p]) => ({
-          id,
-          name: p.name,
-          avatar: p.avatar,
-          joinedAt: new Date(p.joinedAt),
-        })),
-        messages: g.messages.map((m) => ({ text: m.text, createdAt: new Date(m.createdAt) })),
-        storage: "memory",
-      };
-    }
-
-    if (!prisma) return null;
-
-    try {
-      const g = await prisma.game.findUnique({
-        where: { code },
-        include: { players: true, messages: true },
-      });
-      if (!g) return null;
-      return { ...g, storage: "db" };
-    } catch (e) {
-      console.warn("getGame DB error, try fallback to memory:", e?.code || e?.message);
-      return mem.games.has(code) ? await this.getGame(code) : null;
-    }
-  },
-
-  async joinLobby(code, { name, avatar }) {
-    const codeU = String(code).toUpperCase();
-    let game = await this.getGame(codeU);
-    if (!game) throw new Error("GAME_NOT_FOUND");
-
-    // Путь через память
-    if (game.storage === "memory") {
-      const pid = `p_${Math.random().toString(36).slice(2)}`;
-      const g = mem.games.get(codeU);
-      g.players.set(pid, { name, avatar, joinedAt: nowTs() });
-      return { id: pid, name, avatar, storage: "memory" };
-    }
-
-    // Путь через БД (с защитой + fallback в память)
-    try {
-      const player = await prisma.player.create({
-        data: { name, avatar, gameId: game.id },
-        select: { id: true, name: true, avatar: true },
-      });
-      await prisma.game.update({
-        where: { id: game.id },
-        data: { lastActivity: new Date() },
-      });
-      return { ...player, storage: "db" };
-    } catch (e) {
-      console.warn("joinLobby DB error, fallback to memory:", e?.code || e?.message);
-      // Конвертируем игру в памяти и пускаем игрока
-      const gmem = this.ensureMemGame(codeU, {
-        gmId: game.gmId || "0",
-        started: game.started,
-        createdAt: game.createdAt,
-        expiresAt: game.expiresAt,
-      });
-      const pid = `p_${Math.random().toString(36).slice(2)}`;
-      gmem.players.set(pid, { name, avatar, joinedAt: nowTs() });
-      return { id: pid, name, avatar, storage: "memory-fallback" };
-    }
-  },
-
-  async addMessage(code, text) {
-    const game = await this.getGame(code);
-    if (!game) throw new Error("GAME_NOT_FOUND");
-
-    if (game.storage === "memory") {
-      mem.games.get(code).messages.push({ text, createdAt: nowTs() });
-      return;
-    }
-
-    try {
-      await prisma.message.create({ data: { text, gameId: game.id } });
-      await prisma.game.update({
-        where: { id: game.id },
-        data: { lastActivity: new Date() },
-      });
-    } catch (e) {
-      console.warn("addMessage DB error, fallback to memory:", e?.code || e?.message);
-      const gmem = this.ensureMemGame(game.code, {
-        gmId: game.gmId || "0",
-        started: game.started,
-        createdAt: game.createdAt,
-        expiresAt: game.expiresAt,
-      });
-      gmem.messages.push({ text, createdAt: nowTs() });
-    }
-  },
-
-  async cleanupExpired() {
-    const now = new Date();
-
-    // память
-    for (const [code, g] of mem.games.entries()) {
-      if (g.expiresAt <= nowTs()) mem.games.delete(code);
-    }
-
-    // база
-    if (prisma) {
-      try {
-        await prisma.message.deleteMany({ where: { game: { expiresAt: { lt: now } } } });
-        await prisma.player.deleteMany({ where: { game: { expiresAt: { lt: now } } } });
-        await prisma.game.deleteMany({ where: { expiresAt: { lt: now } } });
-      } catch (e) {
-        console.warn("cleanupExpired(DB):", e?.code || e?.message);
-      }
-    }
-  },
-};
-
-/* -------------------- API -------------------- */
-
-// Диагностика (поможет быстро понять, почему «не входит»)
-app.get("/api/health", (req, res) => {
-  res.json({
-    ok: true,
-    prisma: !!prisma,
-    memGames: mem.games.size,
-    env: {
-      PORT,
-      APP_URL,
-      hasBotToken: !!BOT_TOKEN,
+async function statePayload({ code, meTgId }) {
+  const game = await prisma.game.findUnique({
+    where: { code },
+    include: {
+      players: { include: { items: true }, orderBy: { createdAt: "asc" } },
+      items: { where: { playerId: null }, orderBy: { createdAt: "asc" } }, // предметы "на полу"
+      messages: { orderBy: { createdAt: "asc" }, take: 50, include: { author: true } },
+      locations: true,
+      currentLocation: true,
     },
   });
-});
 
-// Получить состояние игры
-app.get("/api/game", async (req, res) => {
-  try {
-    const code = String(req.query.code || "").trim().toUpperCase();
-    const game = await DAL.getGame(code);
-    if (!game) return res.status(404).json({ ok: false, error: "GAME_NOT_FOUND" });
-    res.json({ ok: true, game });
-  } catch (e) {
-    console.error("GET /api/game error:", e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
+  if (!game) return null;
 
-// Войти в лобби
-app.post("/api/lobby/join", async (req, res) => {
-  try {
-    const { code, name, avatar } = req.body || {};
-    if (!code || !name) {
-      return res.status(400).json({ ok: false, error: "BAD_INPUT" });
-    }
-    const sanitized = {
-      code: String(code).toUpperCase(),
-      name: String(name).trim().slice(0, 32) || "Hero",
-      avatar: String(avatar || "🛡️").slice(0, 8),
-    };
+  // мой игрок (если есть)
+  const me = game.players.find((p) => p.tgId === String(meTgId)) || null;
+  const myItems = me ? me.items : [];
 
-    const player = await DAL.joinLobby(sanitized.code, {
-      name: sanitized.name,
-      avatar: sanitized.avatar,
-    });
-    res.json({ ok: true, player });
-  } catch (e) {
-    console.error("POST /api/lobby/join error:", e);
-    // Последний шанс — полностью в память
-    try {
-      const code = String((req.body?.code || "")).toUpperCase();
-      if (!code) throw e;
-      DAL.ensureMemGame(code);
-      const pid = `p_${Math.random().toString(36).slice(2)}`;
-      mem.games.get(code).players.set(pid, {
-        name: (req.body?.name || "Hero").toString().slice(0, 32),
-        avatar: (req.body?.avatar || "🛡️").toString().slice(0, 8),
-        joinedAt: nowTs(),
-      });
-      return res.json({ ok: true, player: { id: pid, name: req.body?.name || "Hero" } });
-    } catch {
-      return res.status(500).json({ ok: false, error: "JOIN_FAILED" });
-    }
-  }
-});
+  // Схлопнем, чтобы не отдавать предметы всех игроков
+  const playersSlim = game.players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    avatar: p.avatar,
+    hp: p.hp,
+    gold: p.gold,
+    isGM: p.isGM,
+  }));
 
-// Отправить сообщение в чат
-app.post("/api/chat/send", async (req, res) => {
-  try {
-    const { code, text } = req.body || {};
-    if (!code || !text) return res.status(400).json({ ok: false, error: "BAD_INPUT" });
-    await DAL.addMessage(String(code).toUpperCase(), String(text).slice(0, 300));
-    res.json({ ok: true });
-  } catch (e) {
-    console.error("POST /api/chat/send error:", e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-/* -------------------- TELEGRAM BOT -------------------- */
-let bot = null;
-
-if (BOT_TOKEN) {
-  bot = new Telegraf(BOT_TOKEN);
-
-  bot.start(async (ctx) => {
-    await ctx.reply(
-      "Dnd Mini App. Выбери действие:",
-      Markup.inlineKeyboard([[Markup.button.webApp("Открыть мини‑апп", `${APP_URL}`)]])
-    );
-  });
-
-  bot.command("new", async (ctx) => {
-    const gmId = String(ctx.from.id);
-    try {
-      const g = await DAL.createGame(gmId);
-      const note =
-        g.storage && g.storage.startsWith("memory")
-          ? "\n(временно без БД, игра сохранится на 6 часов)"
-          : "";
-      await ctx.reply(
-        `Создана игра. Код: ${g.code}${note}\nОткрой мини‑апп и продолжай.`,
-        Markup.inlineKeyboard([[Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${g.code}`)]])
-      );
-    } catch (e) {
-      console.error("NEW failed:", e?.code || e?.message);
-      await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
-    }
-  });
-
-  bot.command("join", async (ctx) => {
-    await ctx.reply("Введи код комнаты (6 символов):");
-    bot.once("text", async (ctx2) => {
-      const code = ctx2.message.text?.trim().toUpperCase();
-      if (!code || code.length !== 6) return ctx2.reply("Код должен быть 6 символов.");
-      const g = await DAL.getGame(code);
-      if (!g) return ctx2.reply("Игра не найдена.");
-      await ctx2.reply(
-        `Код принят: ${code}. Открой мини‑апп и войди в лобби.`,
-        Markup.inlineKeyboard([[Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${code}`)]])
-      );
-    });
-  });
-
-  // webhook
-  app.use(bot.webhookCallback(`/telegraf/${BOT_SECRET_PATH}`, { timeout: 30000 }));
-  bot.telegram
-    .setWebhook(`${APP_URL}/telegraf/${BOT_SECRET_PATH}`)
-    .then(() => console.log("🔗 Webhook set:", `${APP_URL}/telegraf/${BOT_SECRET_PATH}`))
-    .catch((e) => console.warn("Webhook error:", e.message));
-} else {
-  console.warn("⚠️ BOT_TOKEN не задан — Telegram‑бот не активен");
+  return {
+    game: {
+      code: game.code,
+      started: game.started,
+      gmId: game.gmId,
+      location: game.currentLocation
+        ? {
+            id: game.currentLocation.id,
+            name: game.currentLocation.name,
+            description: game.currentLocation.description,
+            imageUrl: game.currentLocation.imageUrl || null,
+          }
+        : null,
+    },
+    me: me
+      ? { id: me.id, name: me.name, avatar: me.avatar, hp: me.hp, gold: me.gold, isGM: me.isGM }
+      : null,
+    players: playersSlim,
+    floor: game.items.map((i) => ({ id: i.id, name: i.name })), // только на полу
+    myItems: myItems.map((i) => ({ id: i.id, name: i.name })),
+    messages: game.messages.map((m) => ({
+      id: m.id,
+      text: m.text,
+      author: m.author ? { id: m.author.id, name: m.author.name, avatar: m.author.avatar } : null,
+      ts: m.createdAt,
+    })),
+    locations: game.locations.map((l) => ({
+      id: l.id,
+      name: l.name,
+      description: l.description,
+      imageUrl: l.imageUrl || null,
+    })),
+  };
 }
 
-/* -------------------- SERVER + CRON -------------------- */
-app.listen(PORT, () => {
-  console.log(`🌐 Web server on ${PORT}`);
+// ─────────────────────────────────────────────────────────────
+// BOT (Telegraf)
+// ─────────────────────────────────────────────────────────────
+if (!BOT_TOKEN) {
+  console.error("BOT_TOKEN is not set");
+  process.exit(1);
+}
+
+const bot = new Telegraf(BOT_TOKEN);
+
+bot.start(async (ctx) => {
+  const kb = Markup.inlineKeyboard([
+    Markup.button.webApp("Открыть мини‑апп", `${APP_URL}`),
+  ]);
+  await ctx.reply("Dnd Mini App. Выбери действие:", kb);
 });
 
-setInterval(() => {
-  DAL.cleanupExpired().catch((e) => console.warn("cleanup error:", e?.message));
-}, 60 * 1000);
+bot.command("new", async (ctx) => {
+  try {
+    // создаём игру
+    const code = genCode();
+    const game = await prisma.game.create({
+      data: {
+        code,
+        gmId: String(ctx.from.id),
+        started: false,
+        expiresAt: new Date(nowTs() + SIX_HOURS_MS),
+      },
+    });
+
+    // Добавим мастера в players, с флагом isGM
+    await prisma.player.upsert({
+      where: { id: `${game.id}_${ctx.from.id}` }, // не уникально по схеме, поэтому используем create
+      update: {},
+      create: {
+        id: `${game.id}_${ctx.from.id}`,
+        tgId: String(ctx.from.id),
+        name: ctx.from.first_name || "GM",
+        isGM: true,
+        gameId: game.id,
+      },
+    });
+
+    const kb = Markup.inlineKeyboard([
+      Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${code}`),
+    ]);
+    await ctx.reply(`Создана игра. Код: ${code}\nОткрой мини‑апп и продолжай.`, kb);
+  } catch (e) {
+    console.error("NEW failed:", e?.code || e);
+    await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
+  }
+});
+
+// /join ожидает код и открывает мини‑апп
+bot.command("join", async (ctx) => {
+  await ctx.reply("Введи код комнаты (6 символов):");
+  bot.on("text", async (ctx2) => {
+    const code = (ctx2.message.text || "").trim().toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(code)) return;
+
+    const g = await gameByCode(code);
+    if (!g) return ctx2.reply("Код не найден. Проверь и попробуй ещё раз.");
+
+    const kb = Markup.inlineKeyboard([
+      Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${code}`),
+    ]);
+    await ctx2.reply(`Код принят: ${code}. Открой мини‑апп и введи имя в лобби.`, kb);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// WEBHOOK
+// ─────────────────────────────────────────────────────────────
+app.use(bot.webhookCallback(`/telegraf/${BOT_SECRET_PATH}`));
+bot.telegram.setWebhook(`${APP_URL}/telegraf/${BOT_SECRET_PATH}`).catch(console.error);
+
+// ─────────────────────────────────────────────────────────────
+// API — общие
+// ─────────────────────────────────────────────────────────────
+
+// получить state
+app.get("/api/state", async (req, res) => {
+  try {
+    const { code, tgId } = req.query;
+    const st = await statePayload({ code, meTgId: tgId });
+    if (!st) return res.status(404).json({ ok: false, error: "not_found" });
+    res.json({ ok: true, data: st });
+  } catch (e) {
+    console.error("state:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// вход в лобби (создаёт/обновляет игрока, если игра есть)
+app.post("/api/joinLobby", async (req, res) => {
+  try {
+    const { code, name, avatar, tgId } = req.body;
+    const game = await gameByCode(code);
+    if (!game) return res.status(404).json({ ok: false, error: "game_not_found" });
+
+    // существует ли уже игрок
+    let player = await prisma.player.findFirst({
+      where: { gameId: game.id, tgId: String(tgId) },
+    });
+
+    if (!player) {
+      player = await prisma.player.create({
+        data: {
+          tgId: String(tgId),
+          name: name?.toString().slice(0, 40) || "Hero",
+          avatar: avatar || null,
+          gameId: game.id,
+        },
+      });
+      await prisma.message.create({
+        data: { gameId: game.id, authorId: player.id, text: `${player.name} вошёл(ла) в лобби.` },
+      });
+    } else {
+      // обновим имя/аватар
+      await prisma.player.update({
+        where: { id: player.id },
+        data: { name: name?.toString().slice(0, 40) || player.name, avatar: avatar || player.avatar },
+      });
+    }
+
+    const st = await statePayload({ code, meTgId: tgId });
+    res.json({ ok: true, data: st });
+  } catch (e) {
+    console.error("joinLobby:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// чат
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { code, tgId, text } = req.body;
+    const game = await gameByCode(code);
+    if (!game) return res.status(404).json({ ok: false });
+
+    const player = await prisma.player.findFirst({ where: { gameId: game.id, tgId: String(tgId) } });
+    if (!player) return res.status(403).json({ ok: false });
+
+    await prisma.message.create({
+      data: {
+        text: String(text || "").slice(0, 500),
+        gameId: game.id,
+        authorId: player.id,
+      },
+    });
+
+    const st = await statePayload({ code, meTgId: tgId });
+    res.json({ ok: true, data: st });
+  } catch (e) {
+    console.error("chat:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// бросок кубика
+app.post("/api/roll", async (req, res) => {
+  try {
+    const { code, tgId, sides } = req.body;
+    const n = Number(sides) || 20;
+    const roll = Math.max(1, Math.floor(Math.random() * n) + 1);
+    const game = await gameByCode(code);
+    if (!game) return res.status(404).json({ ok: false });
+
+    const player = await prisma.player.findFirst({ where: { gameId: game.id, tgId: String(tgId) } });
+    if (!player) return res.status(403).json({ ok: false });
+
+    await prisma.message.create({
+      data: { gameId: game.id, authorId: player.id, text: `${player.name} кинул d${n}: ${roll}` },
+    });
+
+    const st = await statePayload({ code, meTgId: tgId });
+    res.json({ ok: true, data: st, roll });
+  } catch (e) {
+    console.error("roll:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// подобрать предмет с пола (берём самый старый)
+app.post("/api/pickupOne", async (req, res) => {
+  try {
+    const { code, tgId } = req.body;
+    const game = await gameByCode(code);
+    if (!game) return res.status(404).json({ ok: false });
+
+    const player = await prisma.player.findFirst({ where: { gameId: game.id, tgId: String(tgId) } });
+    if (!player) return res.status(403).json({ ok: false });
+
+    const item = await prisma.item.findFirst({
+      where: { gameId: game.id, playerId: null },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!item) return res.json({ ok: true, data: await statePayload({ code, meTgId: tgId }) });
+
+    await prisma.item.update({ where: { id: item.id }, data: { playerId: player.id } });
+    await prisma.message.create({
+      data: { gameId: game.id, authorId: player.id, text: `${player.name} подобрал: ${item.name}` },
+    });
+
+    res.json({ ok: true, data: await statePayload({ code, meTgId: tgId }) });
+  } catch (e) {
+    console.error("pickupOne:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// API — действия ГМа
+// ─────────────────────────────────────────────────────────────
+app.post("/api/gm/giveItem", async (req, res) => {
+  try {
+    const { code, gmTgId, playerId, name } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    await prisma.item.create({
+      data: {
+        name: String(name || "предмет"),
+        gameId: game.id,
+        playerId,
+      },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/giveItem:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/dropItem", async (req, res) => {
+  try {
+    const { code, gmTgId, name } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    await prisma.item.create({ data: { name: String(name || "предмет"), gameId: game.id } });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/dropItem:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/addGold", async (req, res) => {
+  try {
+    const { code, gmTgId, playerId, delta } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    const p = await prisma.player.update({
+      where: { id: playerId },
+      data: { gold: { increment: Number(delta) || 0 } },
+    });
+    await prisma.message.create({
+      data: { gameId: game.id, text: `ГМ изменил золото у ${p.name}: ${p.gold}`, authorId: null },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/addGold:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/addHP", async (req, res) => {
+  try {
+    const { code, gmTgId, playerId, delta } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    const p = await prisma.player.update({
+      where: { id: playerId },
+      data: { hp: { increment: Number(delta) || 0 } },
+    });
+    await prisma.message.create({
+      data: { gameId: game.id, text: `ГМ изменил HP у ${p.name}: ${p.hp}`, authorId: null },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/addHP:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/addLocation", async (req, res) => {
+  try {
+    const { code, gmTgId, name, description, imageUrl } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    await prisma.location.create({
+      data: {
+        name: String(name || "Локация"),
+        description: String(description || ""),
+        imageUrl: imageUrl || null,
+        gameId: game.id,
+      },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/addLocation:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/setCurrentLocation", async (req, res) => {
+  try {
+    const { code, gmTgId, locationId } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    await prisma.game.update({
+      where: { id: game.id },
+      data: { currentLocationId: locationId || null },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/setCurrentLocation:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+app.post("/api/gm/startGame", async (req, res) => {
+  try {
+    const { code, gmTgId } = req.body;
+    const game = await gameByCode(code);
+    if (!game || !isGM(game, gmTgId)) return res.status(403).json({ ok: false });
+
+    await prisma.game.update({
+      where: { id: game.id },
+      data: { started: true },
+    });
+    await prisma.message.create({
+      data: { gameId: game.id, text: "Игра началась!", authorId: null },
+    });
+    res.json({ ok: true, data: await statePayload({ code, meTgId: gmTgId }) });
+  } catch (e) {
+    console.error("gm/startGame:", e);
+    res.status(500).json({ ok: false });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// HOUSEKEEPING: удаляем старые игры (TTL 6 часов)
+// ─────────────────────────────────────────────────────────────
+async function cleanupExpired() {
+  try {
+    await prisma.game.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+  } catch (e) {
+    console.error("cleanupExpired:", e?.code || e);
+  }
+}
+setInterval(cleanupExpired, 60_000);
+
+// Обновляем TTL при любом вызове state или действии
+app.post("/api/ping", async (req, res) => {
+  try {
+    const { code } = req.body;
+    const g = await gameByCode(code);
+    if (g) {
+      await prisma.game.update({
+        where: { id: g.id },
+        data: { expiresAt: new Date(nowTs() + SIX_HOURS_MS) },
+      });
+    }
+    res.json({ ok: true });
+  } catch {
+    res.json({ ok: true });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// START
+// ─────────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log("Web server on", PORT);
+  console.log("Webhook set:", `${APP_URL}/telegraf/${BOT_SECRET_PATH}`);
+});
