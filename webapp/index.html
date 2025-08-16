@@ -1,416 +1,111 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <title>DnD Mini App</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
+  />
+  <title>Dnd Mini App — чистый старт</title>
   <style>
-    :root {
-      --bg:#0f1115; --card:#161a22; --muted:#8e9bb3;
-      --border:#232838; --accent:#4da3ff; --text:#e8eaf0;
-    }
-    * { box-sizing: border-box }
-    body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif }
-    .wrap { max-width: 820px; margin: 24px auto; padding: 0 16px }
-    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:14px }
-    .row { display:flex; gap:12px; align-items:center; }
-    .col { display:flex; flex-direction:column; gap:10px; }
-    h2,h3 { margin:0 0 8px; }
-    input, button, textarea, select {
-      background:#101522; border:1px solid var(--border); color:var(--text);
-      padding:12px 12px; border-radius:10px; font-size:16px;
-    }
-    textarea { min-height: 80px; resize: vertical; }
-    button { cursor:pointer }
-    .muted { color: var(--muted) }
-    .badge { display:inline-block; background:#1b2436; border:1px solid #2a3552; padding:4px 10px; border-radius:10px; }
-    .avatars { display:flex; gap:10px; margin-top:10px; }
-    .av { width:44px; height:44px; border-radius:50%; border:2px solid transparent; display:flex; align-items:center; justify-content:center; background:#0f1320; }
-    .av.active { border-color: var(--accent) }
-    .pill { padding:6px 10px; border:1px solid var(--border); border-radius:999px; display:inline-block; }
-    .list { display:flex; flex-direction:column; gap:8px; }
-    .player { display:flex; align-items:center; gap:8px; }
-    .divider { height:1px; background:var(--border); margin:10px 0; }
-    .big { font-size:18px; padding:14px 16px; }
-    .dice-grid { display:flex; gap:10px; }
-    img.loc { max-width:100%; border-radius:12px; border:1px solid var(--border); }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-    @media (max-width:720px){ .grid{ grid-template-columns:1fr } }
+    :root { color-scheme: dark; }
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;background:#0f1115;color:#e7e7ea}
+    .wrap{max-width:720px;margin:0 auto;padding:16px}
+    .card{background:#181b22;border:1px solid #2a2f3a;border-radius:16px;padding:16px;margin-bottom:16px}
+    .row{display:flex;gap:8px}
+    input,button,select{font:inherit;padding:12px;border-radius:12px;border:1px solid #2a2f3a;background:#0f1115;color:#e7e7ea}
+    input{flex:1}
+    button{background:#3b82f6;border-color:#3b82f6;cursor:pointer}
+    small{opacity:.7}
+    .players{display:flex;flex-direction:column;gap:8px}
+    .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#2a2f3a;margin-left:8px;font-size:12px}
   </style>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <div class="row" style="justify-content:space-between">
-        <div class="row">
-          <h2>DnD Mini App</h2>
-          <div class="badge" id="badgeCode">Код: ————</div>
-        </div>
-        <div id="whoami" class="muted"></div>
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Dnd Mini App</h2>
+        <div id="gameCode" class="pill">—</div>
       </div>
+      <small>Мини‑каркас. Сначала войдите в лобби ниже.</small>
     </div>
 
-    <!-- ВХОД В ЛОББИ -->
-    <div id="joinCard" class="card">
-      <h3>Вход в лобби</h3>
+    <div class="card" id="joinCard">
+      <h3 style="margin-top:0">Вход в лобби</h3>
       <div class="row">
-        <input id="name" placeholder="Ваше имя" style="flex:1" />
-        <button id="btnJoin">Войти</button>
+        <input id="name" placeholder="Имя персонажа" />
+        <select id="avatar">
+          <option value="🛡️">🛡️</option>
+          <option value="🗡️">🗡️</option>
+          <option value="🏹">🏹</option>
+          <option value="🧙">🧙</option>
+          <option value="🧝">🧝</option>
+          <option value="🐺">🐺</option>
+        </select>
+        <button id="joinBtn">Войти</button>
       </div>
-      <div class="muted" style="margin-top:6px">Выберите аватар:</div>
-      <div class="avatars" id="avatars"></div>
-      <div class="muted" style="margin-top:8px">Функционал откроется после входа</div>
+      <small>После входа увидите список игроков.</small>
     </div>
 
-    <!-- ЛОББИ / ИНФО -->
-    <div id="lobbyCard" class="card" style="display:none">
-      <h3>Лобби</h3>
-      <div class="grid">
-        <div class="col">
-          <div><b>Описание персонажа</b></div>
-          <div id="myDesc" class="muted">—</div>
-          <div><b>Мой инвентарь</b></div>
-          <div id="myInv" class="list">—</div>
-        </div>
-        <div class="col">
-          <div><b>Игроки</b></div>
-          <div id="players" class="list"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ИГРА: ПАНЕЛЬ БРОСКОВ (вверху, крупно) -->
-    <div id="rollCard" class="card" style="display:none">
-      <h3>Бросок кубиков</h3>
-      <div class="dice-grid">
-        <button class="big" onclick="roll(6)">🎲 d6</button>
-        <button class="big" onclick="roll(8)">🎲 d8</button>
-        <button class="big" onclick="roll(20)">🎲 d20</button>
-      </div>
-    </div>
-
-    <!-- ИГРА: ЛОКАЦИЯ + ОСМОТРЕТЬСЯ -->
-    <div id="locCard" class="card" style="display:none">
-      <h3>Локация</h3>
-      <div id="locBox" class="col">
-        <div class="muted">—</div>
-      </div>
-      <div style="margin-top:10px">
-        <button id="btnLook" onclick="lookAround()">Осмотреться</button>
-      </div>
-    </div>
-
-    <!-- ЧАТ -->
-    <div id="chatCard" class="card" style="display:none">
-      <h3>Чат</h3>
-      <div id="chat" class="list" style="max-height:260px; overflow:auto"></div>
-      <div class="row" style="margin-top:8px">
-        <input id="msg" placeholder="Написать сообщение..." style="flex:1" />
-        <button onclick="sendMsg()">Отправить</button>
-      </div>
-    </div>
-
-    <!-- ПАНЕЛЬ ГМ -->
-    <div id="gmCard" class="card" style="display:none">
-      <h3>Панель мастера</h3>
-      <div class="muted">Предметы «на полу»: <span id="floorCount">0</span></div>
-
-      <div class="divider"></div>
-      <div class="col">
-        <b>Выдать золото / HP</b>
-        <div class="row">
-          <select id="gmPlayerSelect" style="flex:1"></select>
-          <input id="gmDelta" type="number" placeholder="+/- число" style="width:160px" />
-        </div>
-        <div class="row">
-          <button onclick="gmAddGold(1)">+ Голд</button>
-          <button onclick="gmAddGold(-1)">- Голд</button>
-          <button onclick="gmAddHP(1)">+ HP</button>
-          <button onclick="gmAddHP(-1)">- HP</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
-      <div class="col">
-        <b>Предметы</b>
-        <div class="row">
-          <input id="gmItemName" placeholder="Название предмета" style="flex:1" />
-          <button onclick="gmGiveItem()">Выдать игроку</button>
-        </div>
-        <div class="row">
-          <input id="gmDropName" placeholder="Предмет на пол (или пусто)" style="flex:1" />
-          <input id="gmDropGold" type="number" placeholder="Золото на пол" style="width:180px" />
-          <button onclick="gmDropItem()">Бросить на пол</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
-      <div class="col">
-        <b>Локации</b>
-        <div class="row">
-          <input id="locName" placeholder="Название" style="flex:1" />
-          <input id="locImg" placeholder="URL картинки (опц.)" style="flex:1" />
-        </div>
-        <textarea id="locDesc" placeholder="Описание (текст)"></textarea>
-        <div class="row">
-          <button onclick="gmAddLocation()">Добавить локацию</button>
-          <select id="locSelect" style="flex:1"></select>
-          <button onclick="gmSetLocation()">Сделать текущей</button>
-        </div>
-      </div>
-
-      <div class="divider"></div>
-      <button class="big" onclick="gmStart()">▶️ Начать игру</button>
+    <div class="card" id="playersCard" style="display:none">
+      <h3 style="margin-top:0">Игроки</h3>
+      <div class="players" id="players"></div>
     </div>
   </div>
 
   <script>
-    // ======= Client state =======
-    const AVS = ["🛡️","🗡️","🏹","🧙","🧝","🐺"];
-    let selectedAvatar = AVS[0];
+    const tg = window.Telegram?.WebApp;
+    if (tg) { tg.ready(); tg.expand(); }
 
-    const params = new URLSearchParams(location.search);
-    const code = (params.get("code") || "").toUpperCase();
-    const badge = document.getElementById("badgeCode");
-    badge.textContent = "Код: " + (code || "—");
+    const qs = new URLSearchParams(location.search);
+    const code = (qs.get('code') || '').toUpperCase();
+    document.getElementById('gameCode').textContent = code || '—';
 
-    const tgId = String(
-      (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user && Telegram.WebApp.initDataUnsafe.user.id) ||
-      ("anon_" + Math.floor(Math.random()*1e9))
-    );
+    const me = tg?.initDataUnsafe?.user?.id ? String(tg.initDataUnsafe.user.id) : '';
 
-    // avatars UI
-    const avBox = document.getElementById("avatars");
-    AVS.forEach((ch,i)=>{
-      const d = document.createElement("div");
-      d.className = "av" + (i===0 ? " active" : "");
-      d.textContent = ch;
-      d.onclick = () => {
-        selectedAvatar = ch;
-        [...avBox.children].forEach(x=>x.classList.remove("active"));
-        d.classList.add("active");
-      };
-      avBox.appendChild(d);
+    async function loadState() {
+      if (!code) return;
+      const r = await fetch(`/api/state?code=${code}&me=${me}`);
+      const data = await r.json();
+      if (!data.ok) return;
+
+      if (!data.exists) {
+        document.getElementById('playersCard').style.display = 'none';
+        return;
+      }
+
+      const playersEl = document.getElementById('players');
+      playersEl.innerHTML = '';
+      data.players.forEach(p => {
+        const div = document.createElement('div');
+        div.textContent = `${p.avatar || '🙂'} ${p.name}  •  HP ${p.hp}  •  Gold ${p.gold}`;
+        playersEl.appendChild(div);
+      });
+      document.getElementById('playersCard').style.display = 'block';
+    }
+
+    document.getElementById('joinBtn').addEventListener('click', async () => {
+      if (!code) { alert('Нет кода игры в URL'); return; }
+      const name = document.getElementById('name').value.trim();
+      const avatar = document.getElementById('avatar').value;
+      const tgId = me || prompt('Ваш Telegram id (в отладке вне Telegram):', '12345');
+      if (!name || !tgId) return;
+
+      const r = await fetch('/api/lobby/join', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ code, tgId, name, avatar })
+      });
+      const data = await r.json();
+      if (!data.ok) { alert('Не удалось войти в лобби'); return; }
+      await loadState();
     });
 
-    // ======= API helpers =======
-    async function api(path, body){
-      const r = await fetch(path, {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify(body)
-      });
-      return r.json();
-    }
-    async function loadState(){
-      const r = await fetch(`/api/state?code=${encodeURIComponent(code)}&tgId=${encodeURIComponent(tgId)}`);
-      return r.json();
-    }
-
-    // ======= UI actions =======
-    document.getElementById("btnJoin").onclick = async ()=>{
-      const name = document.getElementById("name").value.trim();
-      if(!code){ alert("Нет кода игры в URL"); return; }
-      if(!name){ alert("Введите имя"); return; }
-      const res = await api("/api/lobby/join", { code, tgId, name, avatar: selectedAvatar });
-      if(!res.ok){ alert("Не удалось войти в лобби"); return; }
-      render(res.data);
-      pollStart();
-    };
-
-    async function sendMsg(){
-      const msg = document.getElementById("msg").value.trim();
-      if(!msg) return;
-      const res = await api("/api/chat/send", { code, tgId, text: msg });
-      document.getElementById("msg").value = "";
-      if(res.ok) render(res.data);
-    }
-
-    async function roll(n){
-      const res = await api("/api/roll", { code, tgId, sides:n });
-      if(res.ok) render(res.data);
-    }
-
-    async function lookAround(){
-      const res = await api("/api/look", { code, tgId });
-      if(res.ok) render(res.data);
-    }
-
-    // ======= GM actions =======
-    async function gmStart(){
-      const res = await api("/api/gm/start", { code, gmTgId: tgId });
-      if(res.ok) render(res.data);
-    }
-    async function gmAddGold(sign){
-      const sel = document.getElementById("gmPlayerSelect");
-      const deltaEl = document.getElementById("gmDelta");
-      const playerTgId = sel.value;
-      let d = Number(deltaEl.value || "1");
-      d = d * (sign >=0 ? 1 : -1);
-      const res = await api("/api/gm/addGold", { code, gmTgId: tgId, playerTgId, delta: d });
-      if(res.ok) render(res.data);
-    }
-    async function gmAddHP(sign){
-      const sel = document.getElementById("gmPlayerSelect");
-      const deltaEl = document.getElementById("gmDelta");
-      const playerTgId = sel.value;
-      let d = Number(deltaEl.value || "1");
-      d = d * (sign >=0 ? 1 : -1);
-      const res = await api("/api/gm/addHP", { code, gmTgId: tgId, playerTgId, delta: d });
-      if(res.ok) render(res.data);
-    }
-    async function gmGiveItem(){
-      const sel = document.getElementById("gmPlayerSelect");
-      const name = document.getElementById("gmItemName").value.trim();
-      if(!name) return;
-      const res = await api("/api/gm/giveItem", { code, gmTgId: tgId, playerTgId: sel.value, name });
-      if(res.ok) render(res.data);
-    }
-    async function gmDropItem(){
-      const name = document.getElementById("gmDropName").value.trim();
-      const gold = Number(document.getElementById("gmDropGold").value || "0");
-      const payload = gold > 0
-        ? { code, gmTgId: tgId, goldAmount: gold }
-        : { code, gmTgId: tgId, name: name || "предмет" };
-      const res = await api("/api/gm/dropItem", payload);
-      if(res.ok) render(res.data);
-    }
-    async function gmAddLocation(){
-      const name = document.getElementById("locName").value.trim() || "Локация";
-      const description = document.getElementById("locDesc").value.trim();
-      const imageUrl = document.getElementById("locImg").value.trim();
-      const res = await api("/api/gm/addLocation", { code, gmTgId: tgId, name, description, imageUrl });
-      if(res.ok){
-        document.getElementById("locName").value="";
-        document.getElementById("locDesc").value="";
-        document.getElementById("locImg").value="";
-        render(res.data);
-      }
-    }
-    async function gmSetLocation(){
-      const sel = document.getElementById("locSelect");
-      const res = await api("/api/gm/setLocation", { code, gmTgId: tgId, locationId: sel.value || null });
-      if(res.ok) render(res.data);
-    }
-
-    // ======= Render =======
-    function render(st){
-      if(!st) return;
-      const me = st.me;
-      const isGM = me && me.isGM;
-      document.getElementById("whoami").textContent = me ? `${me.name} ${me.avatar||""} ${isGM?"(ГМ)":""}` : "";
-
-      // Скрыть всё до входа
-      document.getElementById("joinCard").style.display = me ? "none" : "block";
-      document.getElementById("lobbyCard").style.display = me ? "block" : "none";
-
-      // После начала игры — показать функции
-      document.getElementById("rollCard").style.display = (me && st.game.started) ? "block" : "none";
-      document.getElementById("locCard").style.display  = (me && st.game.started) ? "block" : "none";
-      document.getElementById("chatCard").style.display = (me) ? "block" : "none";
-
-      // У игроков — кнопка «осмотреться», у ГМа её не должно быть
-      document.getElementById("btnLook").style.display = (me && !isGM) ? "inline-block" : "none";
-
-      // Панель ГМа
-      document.getElementById("gmCard").style.display = isGM ? "block" : "none";
-
-      // Мой инвентарь и описание
-      const inv = document.getElementById("myInv");
-      inv.innerHTML = "";
-      if (me && me.inventory && me.inventory.length) {
-        me.inventory.forEach(it=>{
-          const d=document.createElement("div");
-          d.textContent = `• ${it.name}`;
-          inv.appendChild(d);
-        });
-      } else {
-        inv.textContent = "—";
-      }
-      document.getElementById("myDesc").textContent = me && me.description ? me.description : "—";
-
-      // Игроки список
-      const playersBox = document.getElementById("players");
-      playersBox.innerHTML = "";
-      st.players.forEach(p=>{
-        const d = document.createElement("div");
-        d.className="player";
-        d.innerHTML = `<span class="pill">${p.avatar||"🙂"}</span> <b>${p.name}</b> · HP ${p.hp} · Gold ${p.gold}`;
-        playersBox.appendChild(d);
-      });
-
-      // Чат
-      const chatBox = document.getElementById("chat");
-      chatBox.innerHTML = "";
-      st.messages.forEach(m=>{
-        const author = m.authorTgId ? (st.players.find(x=>x.tgId===m.authorTgId)?.name || "Игрок") : "✦";
-        const line = document.createElement("div");
-        line.textContent = `${author}: ${m.text}`;
-        chatBox.appendChild(line);
-      });
-      chatBox.scrollTop = chatBox.scrollHeight;
-
-      // Локация
-      const locBox = document.getElementById("locBox");
-      locBox.innerHTML="";
-      if(st.game.currentLocation){
-        const L = st.game.currentLocation;
-        if(L.imageUrl){
-          const img=document.createElement("img"); img.src=L.imageUrl; img.className="loc";
-          locBox.appendChild(img);
-        }
-        const t=document.createElement("div");
-        t.innerHTML = `<b>${L.name}</b><div class="muted" style="margin-top:6px">${L.description||""}</div>`;
-        locBox.appendChild(t);
-      } else {
-        const t=document.createElement("div");
-        t.className="muted"; t.textContent="Текущая локация не выбрана";
-        locBox.appendChild(t);
-      }
-
-      // GM selects
-      if(isGM){
-        document.getElementById("floorCount").textContent = st.game.floorCount;
-        const sel = document.getElementById("gmPlayerSelect");
-        sel.innerHTML="";
-        st.players.filter(p=>!p.isGM).forEach(p=>{
-          const o=document.createElement("option");
-          o.value=p.tgId; o.textContent=`${p.name} (${p.gold}g, ${p.hp}hp)`;
-          sel.appendChild(o);
-        });
-
-        const locSel = document.getElementById("locSelect");
-        locSel.innerHTML="";
-        const o0=document.createElement("option"); o0.value=""; o0.textContent="— нет —";
-        locSel.appendChild(o0);
-        st.locations.forEach(L=>{
-          const o=document.createElement("option");
-          o.value=L.id; o.textContent=L.name;
-          if(st.game.currentLocation && st.game.currentLocation.id===L.id) o.selected=true;
-          locSel.appendChild(o);
-        });
-      }
-    }
-
-    // ======= Polling =======
-    let pollTimer = null;
-    function pollStart(){
-      if(pollTimer) clearInterval(pollTimer);
-      pollTimer = setInterval(async ()=>{
-        const r = await loadState();
-        if(r.ok) render(r.data);
-      }, 2000);
-    }
-
-    // авто‑загрузка state (если код есть)
-    (async function init(){
-      if(!code) return;
-      const r = await loadState();
-      if(r.ok){
-        render(r.data);
-        if(r.data.me) pollStart(); // уже в лобби — стартуем опрос
-      }
-    })();
+    loadState();
+    // простой поллинг списка игроков
+    setInterval(loadState, 3000);
   </script>
 </body>
 </html>
