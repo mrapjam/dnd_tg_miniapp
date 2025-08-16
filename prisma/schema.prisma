@@ -1,13 +1,114 @@
-model Lobby {
-  id        String   @id @default(cuid())
-  code      String   @unique
-  players   Player[]
-  createdAt DateTime @default(now())
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
 }
 
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// ИГРА / ЛОББИ
+model Game {
+  id         String   @id @default(cuid())
+  code       String   @unique
+  gmId       String
+  title      String?          // опционально, на будущее
+  started    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime?        // сервер выставляет +6 часов
+
+  players    Player[]
+  locations  Location[]
+  items      Item[]
+  messages   Message[]
+  rolls      Roll[]
+}
+
+/// ИГРОК
 model Player {
+  id         String   @id @default(cuid())
+  gameId     String
+  tgId       String             // chatId / userId в TG
+  name       String
+  avatar     String?            // emoji/иконка/URL
+  hp         Int      @default(10)
+  gold       Int      @default(0)
+  isGM       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  locationId String?           // текущая локация
+
+  game       Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  location   Location @relation(fields: [locationId], references: [id])
+
+  items      Item[]
+  messages   Message[]
+  rolls      Roll[]
+
+  @@unique([gameId, tgId])     // один игрок (tgId) внутри одной игры
+}
+
+/// ЛОКАЦИЯ
+model Location {
   id        String   @id @default(cuid())
+  gameId    String
   name      String
-  lobbyId   String
-  lobby     Lobby    @relation(fields: [lobbyId], references: [id])
+  descr     String?
+  imageUrl  String?
+  createdAt DateTime @default(now())
+
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  items     Item[]
+  players   Player[]
+}
+
+/// ПРЕДМЕТ
+model Item {
+  id            String   @id @default(cuid())
+  gameId        String
+  ownerPlayerId String?      // владелец (если null — предмет «на полу»)
+  onFloor       Boolean  @default(false)
+  locationId    String?      // где валяется (когда onFloor=true)
+  name          String
+  qty           Int      @default(1)
+  note          String?
+  type          String?  @default("misc")
+  createdAt     DateTime @default(now())
+
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  owner     Player?  @relation(fields: [ownerPlayerId], references: [id])
+  location  Location @relation(fields: [locationId], references: [id])
+
+  @@index([gameId])
+  @@index([ownerPlayerId])
+  @@index([locationId])
+}
+
+/// СООБЩЕНИЕ (чат лобби/локации)
+model Message {
+  id        String   @id @default(cuid())
+  gameId    String
+  authorId  String?
+  text      String
+  at        DateTime @default(now())
+
+  game     Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  author   Player? @relation(fields: [authorId], references: [id])
+
+  @@index([gameId])
+}
+
+/// БРОСКИ КОСТЕЙ
+model Roll {
+  id        String   @id @default(cuid())
+  gameId    String
+  playerId  String?
+  die       Int
+  result    Int
+  at        DateTime @default(now())
+
+  game    Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  player  Player @relation(fields: [playerId], references: [id])
+
+  @@index([gameId])
 }
