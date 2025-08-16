@@ -3,12 +3,17 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "render-build": "npm install && npx prisma generate && npx prisma migrate deploy"
   },
   "dependencies": {
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
     "express": "^4.19.2",
     "telegraf": "^4.16.3",
-    "cors": "^2.8.5",
-    "body-parser": "^1.20.2"
+    "@prisma/client": "^5.17.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.17.0"
   }
 }
