@@ -8,13 +8,13 @@ datasource db {
 }
 
 model Game {
-  id        BigInt   @id @default(autoincrement())
-  code      String   @unique
-  gmId      String   @default("")
+  id        Int       @id @default(autoincrement())
+  code      String    @unique
+  gmId      String
   title     String?
-  started   Boolean  @default(false)
-  createdAt DateTime @default(now())
-  expiresAt DateTime @default(dbgenerated("now() + interval '6 hours'"))
+  started   Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime  @default(dbgenerated("(now() + interval '6 hours')"))
 
   players   Player[]
   locations Location[]
@@ -24,74 +24,68 @@ model Game {
 }
 
 model Player {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
+  id        Int       @id @default(autoincrement())
+  gameId    Int
   tgId      String
   name      String
   avatar    String?
-  hp        Int      @default(10)
-  gold      Int      @default(0)
-  isGM      Boolean  @default(false)
-  locationId BigInt?
-  createdAt DateTime @default(now())
+  hp        Int       @default(10)
+  gold      Int       @default(0)
+  isGM      Boolean   @default(false)
+  locationId Int?
 
-  game     Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  location Location? @relation(fields: [locationId], references: [id])
-  items    Item[]
-  messages Message[]
-  rolls    Roll[]
-
-  @@unique([gameId, tgId])
+  createdAt DateTime  @default(now())
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  location  Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  items     Item[]
+  messages  Message[]
+  rolls     Roll[]
 }
 
 model Location {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
+  id        Int       @id @default(autoincrement())
+  gameId    Int
   name      String
   descr     String?
   imageUrl  String?
-  createdAt DateTime @default(now())
-
-  game    Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  players Player[]
-  items   Item[]
+  createdAt DateTime  @default(now())
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  players   Player[]
+  items     Item[]
 }
 
 model Item {
-  id        BigInt   @id @default(autoincrement())
-  gameId    BigInt
-  ownerId   BigInt?
-  onFloor   Boolean  @default(false)
-  locationId BigInt?
+  id        Int       @id @default(autoincrement())
+  gameId    Int
+  ownerId   Int?
+  onFloor   Boolean   @default(false)
+  locationId Int?
   name      String
-  qty       Int      @default(1)
-  type      String   @default("misc")
-  createdAt DateTime @default(now())
-
-  game     Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  owner    Player? @relation(fields: [ownerId], references: [id])
-  location Location? @relation(fields: [locationId], references: [id])
+  qty       Int       @default(1)
+  type      String    @default("misc")
+  createdAt DateTime  @default(now())
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  owner     Player?   @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  location  Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
 }
 
 model Message {
-  id       BigInt   @id @default(autoincrement())
-  gameId   BigInt
-  authorId BigInt?
-  text     String
-  at       DateTime @default(now())
-
-  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  author Player? @relation(fields: [authorId], references: [id])
+  id        Int       @id @default(autoincrement())
+  gameId    Int
+  authorId  Int?
+  text      String
+  at        DateTime  @default(now())
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  author    Player?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
 }
 
 model Roll {
-  id       BigInt   @id @default(autoincrement())
-  gameId   BigInt
-  playerId BigInt?
-  die      Int
-  result   Int
-  at       DateTime @default(now())
-
-  game   Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  player Player? @relation(fields: [playerId], references: [id])
+  id        Int       @id @default(autoincrement())
+  gameId    Int
+  playerId  Int?
+  die       Int
+  result    Int
+  at        DateTime  @default(now())
+  game      Game      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  player    Player?   @relation(fields: [playerId], references: [id], onDelete: SetNull)
 }
