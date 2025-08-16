@@ -8,7 +8,7 @@
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; }
     .row { display:flex; gap:8px; margin: 12px 0; flex-wrap: wrap; }
     button { padding: 10px 14px; border: 1px solid #ccc; background: #fff; border-radius: 8px; cursor: pointer; }
-    #log { margin-top: 12px; padding: 10px; border: 1px dashed #aaa; border-radius: 8px; max-height: 220px; overflow: auto; }
+    #log { margin-top: 12px; padding: 10px; border: 1px dashed #aaa; border-radius: 8px; max-height: 260px; overflow: auto; }
     .card { border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
   </style>
 </head>
@@ -16,11 +16,17 @@
   <h2>DnD Mini App</h2>
   <div class="card">
     <div id="me">Загрузка профиля...</div>
+
+    <div class="row">
+      <button id="createGame">🧙 Создать игру (GM)</button>
+    </div>
+
     <div class="row">
       <button data-d="6">🎲 d6</button>
       <button data-d="8">🎲 d8</button>
       <button data-d="20">🎲 d20</button>
     </div>
+
     <div id="log"></div>
   </div>
 
@@ -29,15 +35,35 @@
     const code = qs.get('code') || '';
     const api = (p, opt={}) => fetch(p, { headers: {'Content-Type':'application/json'}, ...opt });
 
-    // Telegram WebApp info (fallback для браузера)
+    // Telegram WebApp user (в браузере фолбек)
     const tg = window.Telegram?.WebApp;
     const user = tg?.initDataUnsafe?.user || { id: 'test', first_name: 'Hero' };
 
     document.getElementById('me').textContent = `Вы: ${user.first_name} | Код игры: ${code || '—'}`;
 
+    // Создание игры из мини‑аппы (кнопка GM)
+    document.getElementById('createGame').onclick = async () => {
+      try {
+        const gmTgId = String(user.id || '0');
+        const r = await api('/api/games', { method:'POST', body: JSON.stringify({ gmTgId }) });
+        const data = await r.json();
+        if (data.code) {
+          location.href = `/?code=${data.code}`;
+        } else {
+          alert('Не удалось создать игру');
+        }
+      } catch (e) {
+        console.error(e);
+        alert('Ошибка создания игры');
+      }
+    };
+
     async function ensureJoin() {
       if (!code) return;
-      await api(`/api/games/${code}/join`, { method:'POST', body: JSON.stringify({ tgId: String(user.id), name: user.first_name })});
+      await api(`/api/games/${code}/join`, {
+        method:'POST',
+        body: JSON.stringify({ tgId: String(user.id), name: user.first_name })
+      });
     }
 
     async function loadGame() {
@@ -46,14 +72,19 @@
       if (!r.ok) return;
       const data = await r.json();
       const log = document.getElementById('log');
-      log.innerHTML = `<b>Броски:</b>` + data.rolls.map(x => `<div>👤 ${x.tgId} — d${x.die} → <b>${x.result}</b></div>`).join('');
+      log.innerHTML = `<b>Броски:</b>` + data.rolls
+        .map(x => `<div>👤 ${x.tgId} — d${x.die} → <b>${x.result}</b></div>`)
+        .join('');
     }
 
     document.querySelectorAll('button[data-d]').forEach(btn => {
       btn.onclick = async () => {
-        if (!code) { alert('Сначала зайдите по коду из чата (/new, /join)'); return; }
+        if (!code) { alert('Сначала создайте или введите код игры (кнопка выше или /new в боте)'); return; }
         const die = Number(btn.dataset.d);
-        const r = await api(`/api/games/${code}/roll`, { method:'POST', body: JSON.stringify({ tgId: String(user.id), die })});
+        const r = await api(`/api/games/${code}/roll`, {
+          method:'POST',
+          body: JSON.stringify({ tgId: String(user.id), die })
+        });
         const data = await r.json();
         const log = document.getElementById('log');
         const row = document.createElement('div');
@@ -63,8 +94,6 @@
     });
 
     ensureJoin().then(loadGame);
-
-    // Автоматически расширяем WebApp (если внутри TG)
     try { tg && tg.expand(); } catch(e){}
   </script>
 </body>
