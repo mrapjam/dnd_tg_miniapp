@@ -105,20 +105,54 @@ const DAL = {
 
   // --- Game ---
   async createGame(gmId) {
-    const now = new Date();
+  const now = new Date();
 
-    if (!prisma) {
-      // подобрать уникальный код
-      let code;
-      for (let i=0;i<10;i++) {
-        const cand = genCode();
-        if (!mem.games.has(cand)) { code = cand; break; }
-      }
-      if (!code) throw new Error("code generation failed");
+  // Ветвь "только память"
+  if (!prisma) {
+    let code;
+    for (let i = 0; i < 10; i++) {
+      const cand = genCode();
+      if (!mem.games.has(cand)) { code = cand; break; }
+    }
+    if (!code) throw new Error("code generation failed");
 
+    mem.games.set(code, {
+      code, gmId,
+      started: false,
+      createdAt: nowTs(),
+      expiresAt: nowTs() + SIX_HOURS_MS,
+      locationId: null,
+      players: new Map(),
+      floor: [],
+      chat: [],
+      locations: new Map(),
+    });
+    return { code, storage: 'memory' };
+  }
+
+  // Prisma: пробуем создать игру; при любой ошибке fallback в память
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = genCode();
+    try {
+      const game = await prisma.game.create({
+        data: {
+          code, gmId,
+          started: false,
+          createdAt: now,
+          lastActivity: now,
+          expiresAt: addMs(now, SIX_HOURS_MS),
+        },
+        select: { code: true }
+      });
+      return { code: game.code, storage: 'db' };
+    } catch (e) {
+      // если коллизия кода — пробуем другой код
+      if (e?.code === "P2002") continue;
+
+      // ЛЮБАЯ другая ошибка БД -> создаём в памяти и выходим
+      console.warn("DB unavailable, fallback to memory for /new:", e?.code || e?.message);
       mem.games.set(code, {
-        code,
-        gmId,
+        code, gmId,
         started: false,
         createdAt: nowTs(),
         expiresAt: nowTs() + SIX_HOURS_MS,
@@ -128,8 +162,13 @@ const DAL = {
         chat: [],
         locations: new Map(),
       });
-      return { code };
+      return { code, storage: 'memory-fallback' };
     }
+  }
+
+  // очень маловероятно
+  throw new Error("failed to create unique code");
+},
 
     // Prisma: ретрай при P2002 (unique violation)
     for (let attempt = 0; attempt < 10; attempt++) {
@@ -382,17 +421,24 @@ if (bot) {
   });
 
   bot.command("new", async (ctx) => {
-    const gmId = String(ctx.from.id);
-    try {
-      const g = await DAL.createGame(gmId);
-      await ctx.reply(`Создана игра. Код: ${g.code}\nОткрой мини‑апп и продолжай.`, Markup.inlineKeyboard([
+  const gmId = String(ctx.from.id);
+  try {
+    const g = await DAL.createGame(gmId);
+    const note = g.storage?.startsWith('memory')
+      ? "\n(временно без БД, игра сохранится на 6 часов)"
+      : "";
+    await ctx.reply(
+      `Создана игра. Код: ${g.code}${note}\nОткрой мини‑апп и продолжай.`,
+      Markup.inlineKeyboard([
         [ Markup.button.webApp("Открыть мини‑апп", `${APP_URL}?code=${g.code}`) ]
-      ]));
-    } catch (e) {
-      console.error("NEW failed:", e?.code, e?.message);
-      await ctx.reply("Не удалось создать игру. Попробуй ещё раз.");
-    }
-  });
+      ])
+    );
+  } catch (e) {
+    // сюда попадём только если не получилось даже в памяти (практически не случается)
+    console.error("NEW failed totally:", e?.code, e?.message);
+    await ctx.reply("Не удалось создать игру (редкая ошибка). Попробуй ещё раз.");
+  }
+});
 
   bot.command("join", async (ctx) => {
     const uid = String(ctx.from.id);
