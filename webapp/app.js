@@ -1,168 +1,119 @@
-// Telegram WebApp bootstrap (без него тоже работает в браузере)
-const tg = window.Telegram?.WebApp;
-if (tg?.expand) tg.expand();
+// bootstrap Telegram
+const tg = window.Telegram?.WebApp; if (tg?.expand) tg.expand();
 
-// ----- helpers -----
 const qs = new URLSearchParams(location.search);
 const state = {
   code: (qs.get('code') || '').toUpperCase(),
-  role: qs.get('role') || '', // 'gm' | 'player'
-  me: null,       // { id, name, username }
-  you: null,      // player-объект
-  game: null,     // состояние игры целиком
-  reveal: 0,      // сколько предметов уже “открыто” кнопкой Осмотреться
+  me: null, you: null, game: null
 };
+
 const API = {
-  async get(path) {
-    const r = await fetch(path);
-    if (!r.ok) throw new Error(`GET ${path} -> ${r.status}`);
-    return r.json();
-  },
-  async post(path, body) {
-    const r = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {})
-    });
-    if (!r.ok) throw new Error(`POST ${path} -> ${r.status}`);
-    return r.json();
-  }
+  async get(p){ const r=await fetch(p); if(!r.ok) throw new Error(r.status); return r.json(); },
+  async post(p,b){ const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); if(!r.ok) throw new Error(r.status); return r.json(); },
+  async upload(p,file){ const fd=new FormData(); fd.append('file', file); const r=await fetch(p,{method:'POST',body:fd}); if(!r.ok) throw new Error(r.status); return r.json(); }
 };
 
-const $ = (sel) => document.querySelector(sel);
-const show = (el, yes = true) => el.classList.toggle('hidden', !yes);
-const toast = (msg, ms = 2200) => {
-  const t = $('#toast');
-  t.textContent = msg;
-  show(t, true);
-  setTimeout(() => show(t, false), ms);
-};
-const codePill = $('#codePill');
+const $ = s=>document.querySelector(s);
+const show = (el, yes=true)=> el.classList.toggle('hidden', !yes);
+const toast = (m,ms=2200)=>{ const t=$('#toast'); t.textContent=m; show(t,true); setTimeout(()=>show(t,false),ms); };
+$('#codePill').textContent = state.code || '— — — — — —';
 
-function getMe() {
-  // из Telegram
+// ===== identity (Telegram / local)
+function getMe(){
   if (tg?.initDataUnsafe?.user?.id) {
-    return {
-      id: String(tg.initDataUnsafe.user.id),
-      name: tg.initDataUnsafe.user.first_name || 'Игрок',
-      username: tg.initDataUnsafe.user.username || ''
-    };
+    return { id:String(tg.initDataUnsafe.user.id), name:tg.initDataUnsafe.user.first_name||'Игрок', username:tg.initDataUnsafe.user.username||'' };
   }
-  // фоллбэк в браузере
   let saved = localStorage.getItem('me');
   if (saved) return JSON.parse(saved);
-  const rnd = Math.random().toString(36).slice(2, 8);
-  const m = { id: `web_${rnd}`, name: 'Hero', username: '' };
-  localStorage.setItem('me', JSON.stringify(m));
-  return m;
+  const rnd = Math.random().toString(36).slice(2,8);
+  const me = { id:`web_${rnd}`, name:'Hero', username:'' };
+  localStorage.setItem('me', JSON.stringify(me));
+  return me;
 }
+state.me = getMe();
 
-// ----- аватары -----
+// ===== avatars
 const AVATARS = ['🛡️','🗡️','🏹','🧙','🧝','🐺','🐉','🧟','👹','🦄'];
-let selectedAvatar = AVATARS[0];
-function renderAvatars() {
-  const wrap = $('#avatarList'); wrap.innerHTML = '';
-  AVATARS.forEach(a => {
-    const span = document.createElement('span');
-    span.className = 'avatar' + (a === selectedAvatar ? ' selected' : '');
-    span.textContent = a;
-    span.onclick = () => { selectedAvatar = a; renderAvatars(); };
-    wrap.appendChild(span);
+let avatarSel = AVATARS[0];
+function renderAvatars(){
+  const box = $('#avatarList'); box.innerHTML='';
+  AVATARS.forEach(a=>{
+    const span=document.createElement('span');
+    span.className='avatar'+(a===avatarSel?' selected':''); span.textContent=a;
+    span.onclick=()=>{ avatarSel=a; renderAvatars(); };
+    box.appendChild(span);
   });
 }
+renderAvatars();
+// file avatar — просто сохраняем data URL в localStorage и подставляем как emoji-плейсхолдер
+$('#avatarFile').addEventListener('change', async (e)=>{
+  const file = e.target.files?.[0]; if(!file) return;
+  toast('Фото выбрано. (Используем как аватар)');
+  avatarSel = '🖼️';
+});
 
-// ----- вкладки -----
+// ===== Tabs
 const tabs = $('#tabs');
-const tabBtns = [...tabs.querySelectorAll('button')];
-const sections = {
-  lobby: $('#lobby'),
-  chat: $('#chat'),
-  map: $('#map'),
-  gm: $('#gm'),
-};
-function activateTab(name) {
-  tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  Object.entries(sections).forEach(([k, el]) => show(el, k === name));
-}
+const tabBtn = name => tabs.querySelector(`[data-tab="${name}"]`);
+const sections = { lobby:$('#lobby'), chat:$('#chat'), map:$('#map'), gm:$('#gm') };
+function activateTab(name){ [...tabs.querySelectorAll('button')].forEach(b=>b.classList.toggle('active', b.dataset.tab===name)); Object.entries(sections).forEach(([k,el])=> show(el,k===name)); }
 
-// ----- UI заполнение -----
-function renderYou() {
-  const card = $('#youCard');
+// ===== Rendering
+function renderYou(){
   const zone = $('#youInfo');
-  if (!state.you) { show(card, false); return; }
-  show(card, true);
+  if (!state.you) { zone.innerHTML=''; return; }
   zone.innerHTML = `
     <div class="list">
       <li><b>${state.you.avatar || '🙂'}</b> ${state.you.name}</li>
       <li>HP: ${state.you.hp} • Gold: ${state.you.gold}</li>
       <li>${state.you.isGM ? 'Вы — Мастер игры' : 'Игрок'}</li>
-    </div>
-  `;
+    </div>`;
+  $('#youBio').textContent = state.you.bio?.trim() || '—';
+  $('#youSheet').textContent = state.you.sheet?.trim() || '—';
 }
 
-function renderPlayers() {
-  const card = $('#playerListCard');
-  const ul = $('#playerList');
-  if (!state.game?.players?.length) { show(card, false); return; }
-  show(card, true);
-  ul.innerHTML = '';
-  state.game.players.forEach(p => {
-    const li = document.createElement('li');
-    li.innerHTML = `<div><b>${p.avatar || '🙂'}</b> ${p.name}</div>
-      <div class="muted">HP ${p.hp} • Gold ${p.gold}${p.isGM ? ' • ГМ' : ''}</div>`;
-    ul.appendChild(li);
-  });
-}
-
-function renderChat() {
-  const box = $('#chatList');
-  box.innerHTML = '';
-  (state.game?.messages || []).forEach(m => {
-    const mine = state.you && m.authorId === state.you.id;
-    const div = document.createElement('div');
-    div.className = 'msg' + (mine ? ' me' : '');
-    div.textContent = m.text;
+function renderChat(into='#chatList'){
+  const box=$(into); box.innerHTML='';
+  (state.game?.messages||[]).forEach(m=>{
+    const mine = state.you && m.authorid===state.you.id;
+    const div=document.createElement('div');
+    div.className='msg'+(mine?' me':''); div.textContent=m.text;
     box.appendChild(div);
   });
-  box.scrollTop = 1e9;
+  box.scrollTop=1e9;
 }
 
-function renderLocation() {
-  const b = $('#locBlock');
-  const playerLocId = state.you?.locationId || null;
-  const loc = (state.game?.locations || []).find(l => l.id === playerLocId);
-  b.innerHTML = loc
-    ? `<h3>${loc.name}</h3><p class="muted">${loc.descr || ''}</p>${loc.imageUrl ? `<img src="${loc.imageUrl}" alt="">` : ''}`
+function renderLocation(){
+  const started = !!state.game?.started;
+  show($('#mapTab'), started);
+  show($('#map'), started && tabs.querySelector('.active')?.dataset.tab==='map');
+  if (!started) return;
+
+  const you = state.you;
+  const loc = (state.game?.locations||[]).find(l=> l.id===you?.locationid);
+  $('#locBlock').innerHTML = loc
+    ? `<h3>${loc.name}</h3><p class="muted">${loc.descr||''}</p>${loc.imageurl?`<img src="${loc.imageurl}" alt="">`:''}`
     : `<p class="muted">Локация не назначена.</p>`;
 
-  // Показ предметов: постепенно по кнопке "Осмотреться"
-  const floor = (state.game?.items || [])
-    .filter(i => i.onFloor && (!i.locationId || i.locationId === playerLocId));
-  const ul = $('#floorList'); ul.innerHTML = '';
-  const slice = floor.slice(0, state.reveal || 0);
-  slice.forEach(i => {
-    const li = document.createElement('li');
-    li.textContent = `${i.name} × ${i.qty}`;
-    ul.appendChild(li);
+  const ul = $('#floorList'); ul.innerHTML='';
+  (state.game?.floorItems||[]).forEach(i=>{
+    const li=document.createElement('li');
+    li.textContent=`${i.name} × ${i.qty}`; ul.appendChild(li);
   });
 }
 
-function renderGM() {
-  const gmTab = $('#gmTab');
-  const gmSec = $('#gm');
-  const isGM = Boolean(state.you?.isGM);
-  show(gmTab, isGM);
-  show(gmSec, isGM && tabs.querySelector('.active')?.dataset.tab === 'gm');
-  if (!isGM) return;
+function renderGM(){
+  const isGM = !!state.you?.isgm;
+  show($('#gmTab'), isGM);
+  show($('#gm'), isGM && tabs.querySelector('.active')?.dataset.tab==='gm');
+  if(!isGM) return;
 
-  $('#gmBadge').textContent = `Вы — ГМ. Игра ${state.game?.started ? 'начата' : 'в лобби'}.`;
+  $('#gmBadge').textContent = `Вы — ГМ. Игра ${state.game?.started?'начата':'в лобби'}.`;
 
-  // список игроков с +HP/-HP и +Gold/-Gold
-  const ul = $('#gmPlayers'); ul.innerHTML = '';
-  (state.game?.players || []).forEach(p => {
-    const li = document.createElement('li');
-    li.innerHTML = `
-      <div><b>${p.avatar || '🙂'}</b> ${p.name}</div>
+  const ul = $('#gmPlayers'); ul.innerHTML='';
+  (state.game?.players||[]).forEach(p=>{
+    const li=document.createElement('li');
+    li.innerHTML = `<div><b>${p.avatar||'🙂'}</b> ${p.name}</div>
       <div>
         <button class="btn" data-act="hp-" data-id="${p.id}">-HP</button>
         <button class="btn" data-act="hp+" data-id="${p.id}">+HP</button>
@@ -171,176 +122,154 @@ function renderGM() {
       </div>`;
     ul.appendChild(li);
   });
-
-  ul.onclick = async (e) => {
-    const btn = e.target.closest('button'); if (!btn) return;
-    const id = Number(btn.dataset.id);
-    const act = btn.dataset.act;
-    try {
-      if (act === 'hp+' || act === 'hp-') {
-        const delta = act === 'hp+' ? 1 : -1;
-        await API.post('/api/gm/grant-hp', { code: state.code, me: state.me.id, playerId: id, delta });
-      } else {
-        const delta = act === 'g+' ? 1 : -1;
-        await API.post('/api/gm/grant-gold', { code: state.code, me: state.me.id, playerId: id, delta });
-      }
-      await refreshState();
-    } catch (err) {
-      toast('Ошибка изменения параметров игрока'); console.error(err);
-    }
+  ul.onclick = async (e)=>{
+    const b=e.target.closest('button'); if(!b) return;
+    const id=Number(b.dataset.id); const act=b.dataset.act;
+    try{
+      if(act.startsWith('hp')) await API.post('/api/gm/grant-hp',{playerId:id,delta: act==='hp+'?1:-1});
+      else await API.post('/api/gm/grant-gold',{playerId:id,delta: act==='g+'?1:-1});
+      await refresh();
+    }catch(err){ console.error(err); toast('Ошибка изменения параметров'); }
   };
 
-  // выпадашки (локации, владельцы)
-  const locSel = $('#startLoc'); locSel.innerHTML = '';
-  const locSel2 = $('#itemLoc'); locSel2.innerHTML = '<option value="">(нет)</option>';
-  (state.game?.locations || []).forEach(l => {
-    const o = new Option(l.name, l.id); locSel.add(o);
-    const o2 = new Option(l.name, l.id); locSel2.add(o2);
+  // selects
+  const locSel = $('#startLoc'); locSel.innerHTML='';
+  const locSel2 = $('#itemLoc'); locSel2.innerHTML='<option value="">(нет)</option>';
+  (state.game?.locations||[]).forEach(l=>{
+    locSel.add(new Option(l.name, l.id));
+    locSel2.add(new Option(l.name, l.id));
   });
-
-  const ownerSel = $('#itemOwner'); ownerSel.innerHTML = '<option value="">(на пол)</option>';
-  (state.game?.players || []).forEach(p => ownerSel.add(new Option(p.name, p.id)));
+  const ownerSel = $('#itemOwner'); ownerSel.innerHTML='<option value="">(на пол)</option>';
+  (state.game?.players||[]).forEach(p=> ownerSel.add(new Option(p.name, p.id)));
 }
 
-// ----- общий рендер -----
-function renderAll() {
-  codePill.textContent = state.code || '— — — — — —';
-  const hasYou = Boolean(state.you);
+function afterJoinUI() {
+  // показываем вкладку ЧАТ, скрываем карту до старта
+  show($('#chatTab'), true);
+  show($('#mapTab'), !!state.game?.started);
+  activateTab('chat');
+}
 
-  // включаем вкладки после входа
-  show(tabs, true);
-  show($('#gmTab'), Boolean(state.you?.isGM));
-
+function renderAll(){
   renderYou();
-  renderPlayers();
-  renderChat();
+  renderChat('#chatList');
+  renderChat('#chatList2');
   renderLocation();
   renderGM();
-
-  // если не вошёл — показываем лобби
-  if (!hasYou) activateTab('lobby');
 }
 
-// ----- загрузка состояния -----
-async function refreshState() {
-  if (!state.code) return;
-  const data = await API.get(`/api/state?code=${encodeURIComponent(state.code)}&me=${encodeURIComponent(state.me?.id || '')}`);
-  if (!data.ok) return;
-  state.game = data.exists ? data : null;
+// ===== refresh
+async function refresh(){
+  if(!state.code) return;
+  const meId = state.me?.id || '';
+  const data = await API.get(`/api/state?code=${encodeURIComponent(state.code)}&me=${encodeURIComponent(meId)}`);
+  if(!data.ok && !data.exists){ return; }
+  state.game = data.exists? data : null;
   state.you = data.you || null;
+
+  if (state.you && !tabs.classList.contains('hidden')) {
+    // уже в интерфейсе
+  }
+  if (state.you) { tabs.classList.remove('hidden'); afterJoinUI(); }
   renderAll();
 }
 
-// ----- join flow -----
-$('#joinBtn').onclick = async () => {
-  try {
+// ===== actions
+
+// JOIN
+$('#joinBtn').onclick = async ()=>{
+  try{
     const name = ($('#nameInput').value || '').trim() || state.me.name || 'Hero';
-    await API.post('/api/lobby/join', {
-      code: state.code,
-      tgId: state.me.id,
-      name,
-      avatar: selectedAvatar
-    });
+    await API.post('/api/lobby/join',{ code:state.code, tgId:state.me.id, name, avatar: avatarSel });
     $('#joinHint').textContent = 'Готово! Перехожу к чату…';
-    await refreshState();
-    activateTab('chat');
-  } catch (e) {
-    toast('Не удалось войти в лобби'); console.error(e);
-  }
+    await refresh();
+  }catch(e){ console.error(e); toast('Не удалось войти в лобби'); }
 };
 
-// чат
-$('#sendMsg').onclick = async () => {
-  const txt = ($('#chatInput').value || '').trim();
-  if (!txt) return;
-  try {
-    await API.post('/api/message', { gameId: state.game.id, authorId: state.you?.id || null, text: txt });
-    $('#chatInput').value = '';
-    await refreshState();
-  } catch (e) { console.error(e); toast('Не удалось отправить'); }
+// CHAT
+async function sendChat(inputSel){
+  const input=$(inputSel);
+  const txt=(input.value||'').trim(); if(!txt) return;
+  try{ await API.post('/api/message',{ gameId: state.game.id, authorId: state.you?.id || null, text: txt });
+    input.value=''; await refresh(); }catch(e){ console.error(e); toast('Не отправилось'); }
+}
+$('#sendMsg').onclick = ()=> sendChat('#chatInput');
+$('#sendMsg2').onclick = ()=> sendChat('#chatInput2');
+
+// ROLL (видна только после старта)
+$('#rollBtn').onclick = async ()=>{
+  try{
+    const die=Number($('#dieSelect').value||20);
+    const r=await API.post('/api/roll',{ gameId:state.game.id, playerId: state.you?.id || null, die });
+    toast(`Бросок d${die}: ${r.roll.result}`); await refresh();
+  }catch(e){ console.error(e); toast('Не удалось бросить'); }
 };
 
-// бросок
-$('#rollBtn').onclick = async () => {
-  try {
-    const die = Number($('#dieSelect').value || 20);
-    const r = await API.post('/api/roll', { gameId: state.game.id, playerId: state.you?.id || null, die });
-    toast(`Бросок d${die}: ${r.roll.result}`);
-    await refreshState();
-  } catch (e) { console.error(e); toast('Не удалось бросить'); }
+// LOOK — серверно (+1 предмет)
+$('#lookBtn').onclick = async ()=>{
+  try{
+    await API.post('/api/look',{ gameId: state.game.id, playerId: state.you.id });
+    await refresh();
+  }catch(e){ console.error(e); toast('Не удалось осмотреться'); }
 };
 
-// осмотреться — показываем ещё один предмет
-$('#lookBtn').onclick = () => {
-  state.reveal = (state.reveal || 0) + 1;
-  renderLocation();
+// GM: upload location image
+$('#uploadLocImg').onclick = async ()=>{
+  const f = $('#locFile').files?.[0]; if(!f){ toast('Выберите файл'); return; }
+  try{
+    const r = await API.upload('/api/location/upload', f);
+    $('#locImg').value = r.url; toast('Фото загружено');
+  }catch(e){ console.error(e); toast('Загрузка не удалась'); }
 };
 
-// ГМ: создать локацию
-$('#addLoc').onclick = async () => {
-  try {
-    await API.post('/api/location', {
-      gameId: state.game.id,
-      name: $('#locName').value || 'Локация',
-      descr: $('#locDescr').value || '',
-      imageUrl: $('#locImg').value || null
-    });
-    $('#locName').value = ''; $('#locDescr').value = ''; $('#locImg').value = '';
-    toast('Локация добавлена');
-    await refreshState();
-  } catch (e) { console.error(e); toast('Не удалось создать локацию'); }
+// GM: add location
+$('#addLoc').onclick = async ()=>{
+  try{
+    await API.post('/api/location',{ gameId: state.game.id, name: $('#locName').value||'Локация', descr: $('#locDescr').value||'', imageUrl: $('#locImg').value||null });
+    $('#locName').value=''; $('#locDescr').value=''; $('#locImg').value='';
+    toast('Локация добавлена'); await refresh();
+  }catch(e){ console.error(e); toast('Не удалось создать локацию'); }
 };
 
-// ГМ: старт игры
-$('#startGame').onclick = async () => {
-  try {
-    const locId = Number($('#startLoc').value || 0) || null;
+// GM: start game
+$('#startGame').onclick = async ()=>{
+  try{
+    const locId = Number($('#startLoc').value||0) || null;
     await API.post(`/api/game/${state.game.id}/start`, { locationId: locId });
-    toast('Игра началась');
-    await refreshState();
-    activateTab('map');
-  } catch (e) { console.error(e); toast('Не удалось начать игру'); }
+    toast('Игра началась'); await refresh(); activateTab('map');
+  }catch(e){ console.error(e); toast('Не удалось начать'); }
 };
 
-// ГМ: выдать предмет
-$('#giveItem').onclick = async () => {
-  try {
-    const name = $('#itemName').value || 'Предмет';
-    const qty = Number($('#itemQty').value || 1);
-    const ownerId = Number($('#itemOwner').value || 0) || null;
+// GM: create item
+$('#giveItem').onclick = async ()=>{
+  try{
+    const name=$('#itemName').value||'Предмет';
+    const qty=Number($('#itemQty').value||1);
+    const ownerId=Number($('#itemOwner').value||0)||null;
     const onFloor = $('#itemOnFloor').checked || !ownerId;
-    const locationId = Number($('#itemLoc').value || 0) || null;
-    await API.post('/api/item', {
-      gameId: state.game.id, name, qty, ownerId, onFloor, locationId
-    });
-    $('#itemName').value = ''; $('#itemQty').value = '1'; $('#itemOwner').value = ''; $('#itemOnFloor').checked = false; $('#itemLoc').value = '';
-    toast('Предмет создан');
-    await refreshState();
-  } catch (e) { console.error(e); toast('Не удалось создать предмет'); }
+    const locationId=Number($('#itemLoc').value||0)||null;
+    await API.post('/api/item',{ gameId: state.game.id, name, qty, ownerId, onFloor, locationId });
+    $('#itemName').value=''; $('#itemQty').value='1'; $('#itemOwner').value=''; $('#itemOnFloor').checked=false; $('#itemLoc').value='';
+    toast('Предмет создан'); await refresh();
+  }catch(e){ console.error(e); toast('Не удалось создать предмет'); }
 };
 
-// переключение вкладок
-tabs.onclick = (e) => {
-  const btn = e.target.closest('button'); if (!btn) return;
-  const tab = btn.dataset.tab;
-  if (tab === 'gm' && !state.you?.isGM) return;
+// tabs
+$('#tabs').onclick = (e)=>{
+  const b=e.target.closest('button'); if(!b) return;
+  const tab=b.dataset.tab;
+  if (tab==='map' && !state.game?.started) return; // скрыто до старта
+  if (tab==='gm' && !state.you?.isgm) return;
   activateTab(tab);
 };
 
-// ----- старт -----
+// init
 (async function init(){
-  state.me = getMe();
-  renderAvatars();
-
-  // если зашли через дип‑линк с role, сразу на нужную вкладку
-  if (state.role === 'gm') activateTab('gm');
-  else activateTab('lobby');
-
-  if (!state.code) {
-    toast('Открой мини‑аппу из бота (нет кода комнаты)');
-    return;
-  }
-  await refreshState();
-  // автообновление
-  setInterval(() => refreshState().catch(() => {}), 3000);
+  if (!state.code) { toast('Откройте мини‑аппу из бота: нет кода'); return; }
+  // до входа показываем только лобби
+  tabs.classList.remove('hidden');
+  show($('#chatTab'), false); show($('#mapTab'), false); show($('#gmTab'), false);
+  activateTab('lobby');
+  await refresh().catch(()=>{});
+  setInterval(()=>refresh().catch(()=>{}), 3000);
 })();
