@@ -2,140 +2,152 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
   <title>Dnd Mini App</title>
-  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./style.css"/>
 </head>
 <body>
-  <header class="top">
-    <div class="title">
-      <h1>Dnd Mini App</h1>
-      <span id="codePill" class="pill">— — — — — —</span>
+<header class="top">
+  <div class="title">
+    <h1>Dnd Mini App</h1>
+    <span id="codePill" class="pill">— — — — — —</span>
+  </div>
+  <nav id="tabs" class="tabs hidden">
+    <button data-tab="lobby" class="active">Лобби</button>
+    <button data-tab="chat" id="chatTab" class="hidden">Чат</button>
+    <button data-tab="map" id="mapTab" class="hidden">Локация</button>
+    <button data-tab="gm" id="gmTab" class="hidden">ГМ</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ЛОББИ: только вход -->
+  <section id="lobby" class="tab active">
+    <div class="card">
+      <h2>Вход в лобби</h2>
+      <div class="grid">
+        <input id="nameInput" class="input" placeholder="Имя" />
+        <button id="joinBtn" class="btn primary">Войти</button>
+      </div>
+
+      <div class="avatars">
+        <span class="muted">Аватар:</span>
+        <div id="avatarList" class="avatar-list"></div>
+        <div class="upload">
+          <input type="file" id="avatarFile" accept="image/*" />
+          <label for="avatarFile" class="btn">Фото из галереи</label>
+        </div>
+      </div>
+
+      <div id="joinHint" class="hint"></div>
     </div>
-    <nav id="tabs" class="tabs hidden">
-      <button data-tab="lobby" class="active">Лобби</button>
-      <button data-tab="chat">Чат</button>
-      <button data-tab="map">Локация</button>
-      <button data-tab="gm" id="gmTab" class="hidden">ГМ</button>
-    </nav>
-  </header>
+  </section>
 
-  <main>
-    <!-- ЛОББИ / ВХОД -->
-    <section id="lobby" class="tab active">
-      <div class="card">
-        <h2>Вход в лобби</h2>
-        <p class="muted">После входа увидите чат и инвентарь.</p>
-        <div class="grid">
-          <input id="nameInput" class="input" placeholder="Имя" />
-          <button id="joinBtn" class="btn primary">Войти</button>
+  <!-- ЧАТ + карточка игрока/описание/инвентарь -->
+  <section id="chat" class="tab">
+    <div class="card">
+      <h2>Вы</h2>
+      <div id="youInfo"></div>
+      <div id="youExtra" class="grid two">
+        <div>
+          <h3>Описание</h3>
+          <div id="youBio" class="mono muted">—</div>
         </div>
-
-        <div class="avatars">
-          <span class="muted">Выберите аватар:</span>
-          <div id="avatarList" class="avatar-list"></div>
-        </div>
-
-        <div id="joinHint" class="hint"></div>
-      </div>
-
-      <div id="youCard" class="card hidden">
-        <h3>Вы</h3>
-        <div id="youInfo"></div>
-      </div>
-
-      <div id="playerListCard" class="card hidden">
-        <h3>Игроки</h3>
-        <ul id="playerList" class="list"></ul>
-      </div>
-    </section>
-
-    <!-- ЧАТ -->
-    <section id="chat" class="tab">
-      <div class="card">
-        <h2>Чат</h2>
-        <div id="chatList" class="chat"></div>
-        <div class="grid">
-          <input id="chatInput" class="input" placeholder="Сообщение…" />
-          <button id="sendMsg" class="btn">Отправить</button>
+        <div>
+          <h3>Инвентарь</h3>
+          <div id="youSheet" class="mono muted">—</div>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- ЛОКАЦИЯ / ИГРОК -->
-    <section id="map" class="tab">
-      <div class="card">
-        <div class="grid top-actions">
-          <button id="rollBtn" class="btn xl">🎲 Бросить d20</button>
-          <select id="dieSelect" class="input">
-            <option value="4">d4</option>
-            <option value="6">d6</option>
-            <option value="8">d8</option>
-            <option value="10">d10</option>
-            <option value="12">d12</option>
-            <option value="20" selected>d20</option>
-          </select>
-        </div>
-
-        <h2>Локация</h2>
-        <div id="locBlock" class="loc"></div>
-        <div class="grid">
-          <button id="lookBtn" class="btn">Осмотреться</button>
-        </div>
-
-        <h3>Предметы поблизости</h3>
-        <ul id="floorList" class="list"></ul>
+    <div class="card">
+      <h2>Чат</h2>
+      <div id="chatList" class="chat"></div>
+      <div class="grid">
+        <input id="chatInput" class="input" placeholder="Сообщение…" />
+        <button id="sendMsg" class="btn">Отправить</button>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <!-- ГМ ПАНЕЛЬ -->
-    <section id="gm" class="tab">
-      <div class="card">
-        <h2>Панель мастера</h2>
-        <p id="gmBadge" class="muted"></p>
+  <!-- ЛОКАЦИЯ/ИГРА (появляется только после старта игры) -->
+  <section id="map" class="tab">
+    <div class="card">
+      <div class="grid top-actions">
+        <button id="rollBtn" class="btn xl">🎲 Бросить</button>
+        <select id="dieSelect" class="input">
+          <option value="4">d4</option><option value="6">d6</option>
+          <option value="8">d8</option><option value="10">d10</option>
+          <option value="12">d12</option><option value="20" selected>d20</option>
+        </select>
+      </div>
 
-        <h3>Игроки</h3>
-        <ul id="gmPlayers" class="list"></ul>
+      <h2>Локация</h2>
+      <div id="locBlock" class="loc"></div>
+      <div class="grid">
+        <button id="lookBtn" class="btn">Осмотреться</button>
+      </div>
 
-        <div class="grid two">
-          <div>
-            <h3>Создать локацию</h3>
-            <input id="locName" class="input" placeholder="Название" />
-            <input id="locDescr" class="input" placeholder="Описание" />
-            <input id="locImg" class="input" placeholder="URL изображения (необ.)" />
-            <button id="addLoc" class="btn">Добавить</button>
+      <h3>Предметы поблизости</h3>
+      <ul id="floorList" class="list"></ul>
+    </div>
+
+    <!-- Чат переезжает вниз во время игры -->
+    <div class="card">
+      <h2>Чат</h2>
+      <div id="chatList2" class="chat"></div>
+      <div class="grid">
+        <input id="chatInput2" class="input" placeholder="Сообщение…" />
+        <button id="sendMsg2" class="btn">Отправить</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ПАНЕЛЬ ГМ -->
+  <section id="gm" class="tab">
+    <div class="card">
+      <h2>Панель мастера</h2>
+      <p id="gmBadge" class="muted"></p>
+
+      <h3>Игроки</h3>
+      <ul id="gmPlayers" class="list"></ul>
+
+      <div class="grid two">
+        <div>
+          <h3>Создать локацию</h3>
+          <input id="locName" class="input" placeholder="Название"/>
+          <input id="locDescr" class="input" placeholder="Описание"/>
+          <input id="locImg" class="input" placeholder="URL изображения (необ.)"/>
+          <div class="grid">
+            <input type="file" id="locFile" accept="image/*">
+            <button id="uploadLocImg" class="btn">Загрузить фото</button>
           </div>
-
-          <div>
-            <h3>Старт игры</h3>
-            <select id="startLoc" class="input"></select>
-            <button id="startGame" class="btn primary">▶ Начать игру</button>
-          </div>
+          <button id="addLoc" class="btn">Добавить</button>
         </div>
 
-        <h3>Выдать предмет</h3>
-        <div class="grid three">
-          <input id="itemName" class="input" placeholder="Название" />
-          <input id="itemQty" class="input" type="number" value="1" min="1" />
-          <select id="itemOwner" class="input"></select>
-        </div>
-        <div class="grid">
-          <label class="chk">
-            <input id="itemOnFloor" type="checkbox" />
-            На пол (в выбранную ниже локацию)
-          </label>
-          <select id="itemLoc" class="input"></select>
-          <button id="giveItem" class="btn">Создать</button>
+        <div>
+          <h3>Старт игры</h3>
+          <select id="startLoc" class="input"></select>
+          <button id="startGame" class="btn primary">▶ Начать игру</button>
         </div>
       </div>
-    </section>
-  </main>
 
-  <footer id="toast" class="toast hidden"></footer>
+      <h3>Выдать предмет</h3>
+      <div class="grid three">
+        <input id="itemName" class="input" placeholder="Название"/>
+        <input id="itemQty" class="input" type="number" value="1" min="1"/>
+        <select id="itemOwner" class="input"></select>
+      </div>
+      <div class="grid">
+        <label class="chk"><input id="itemOnFloor" type="checkbox"/> На пол</label>
+        <select id="itemLoc" class="input"></select>
+        <button id="giveItem" class="btn">Создать</button>
+      </div>
+    </div>
+  </section>
+</main>
 
-  <script src="./app.js" type="module"></script>
+<footer id="toast" class="toast hidden"></footer>
+<script type="module" src="./app.js"></script>
 </body>
 </html>
