@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Dnd Mini App</title>
   <link rel="stylesheet" href="./style.css"/>
 </head>
@@ -21,20 +21,28 @@
 </header>
 
 <main>
-  <!-- ЛОББИ: только вход -->
+  <!-- ЛОББИ -->
   <section id="lobby" class="tab active">
     <div class="card">
       <h2>Вход в лобби</h2>
+
+      <div id="codeRow" class="grid">
+        <input id="codeInput" class="input" placeholder="Код комнаты (6 символов)"/>
+        <button id="applyCode" class="btn">Ок</button>
+      </div>
+
       <div class="grid">
-        <input id="nameInput" class="input" placeholder="Имя" />
+        <input id="nameInput" class="input" placeholder="Имя"/>
         <button id="joinBtn" class="btn primary">Войти</button>
       </div>
+
+      <label class="chk"><input id="asGM" type="checkbox"/> Я — ГМ (создам игру, если её ещё нет)</label>
 
       <div class="avatars">
         <span class="muted">Аватар:</span>
         <div id="avatarList" class="avatar-list"></div>
         <div class="upload">
-          <input type="file" id="avatarFile" accept="image/*" />
+          <input type="file" id="avatarFile" accept="image/*"/>
           <label for="avatarFile" class="btn">Фото из галереи</label>
         </div>
       </div>
@@ -43,7 +51,7 @@
     </div>
   </section>
 
-  <!-- ЧАТ + карточка игрока/описание/инвентарь -->
+  <!-- ЧАТ + инфо -->
   <section id="chat" class="tab">
     <div class="card">
       <h2>Вы</h2>
@@ -64,13 +72,13 @@
       <h2>Чат</h2>
       <div id="chatList" class="chat"></div>
       <div class="grid">
-        <input id="chatInput" class="input" placeholder="Сообщение…" />
+        <input id="chatInput" class="input" placeholder="Сообщение…"/>
         <button id="sendMsg" class="btn">Отправить</button>
       </div>
     </div>
   </section>
 
-  <!-- ЛОКАЦИЯ/ИГРА (появляется только после старта игры) -->
+  <!-- ИГРА -->
   <section id="map" class="tab">
     <div class="card">
       <div class="grid top-actions">
@@ -84,26 +92,22 @@
 
       <h2>Локация</h2>
       <div id="locBlock" class="loc"></div>
-      <div class="grid">
-        <button id="lookBtn" class="btn">Осмотреться</button>
-      </div>
-
+      <div class="grid"><button id="lookBtn" class="btn">Осмотреться</button></div>
       <h3>Предметы поблизости</h3>
       <ul id="floorList" class="list"></ul>
     </div>
 
-    <!-- Чат переезжает вниз во время игры -->
     <div class="card">
       <h2>Чат</h2>
       <div id="chatList2" class="chat"></div>
       <div class="grid">
-        <input id="chatInput2" class="input" placeholder="Сообщение…" />
+        <input id="chatInput2" class="input" placeholder="Сообщение…"/>
         <button id="sendMsg2" class="btn">Отправить</button>
       </div>
     </div>
   </section>
 
-  <!-- ПАНЕЛЬ ГМ -->
+  <!-- ГМ -->
   <section id="gm" class="tab">
     <div class="card">
       <h2>Панель мастера</h2>
@@ -124,7 +128,6 @@
           </div>
           <button id="addLoc" class="btn">Добавить</button>
         </div>
-
         <div>
           <h3>Старт игры</h3>
           <select id="startLoc" class="input"></select>
