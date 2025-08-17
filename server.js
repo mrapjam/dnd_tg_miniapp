@@ -4,7 +4,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
-import multer from "multer";
+//import multer from "multer";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import pg from "pg";
@@ -321,8 +321,8 @@ app.post("/api/location", async (req,res)=>{
     g.locations.push(loc); res.json({ ok:true, location: loc });
   }
 });
-const upload = multer({ dest: path.join(__dirname, "uploads") });
-app.post("/api/location/upload", upload.single("file"), (req,res)=>{
+//const upload = multer({ dest: path.join(__dirname, "uploads") });
+//app.post("/api/location/upload", upload.single("file"), (req,res)=>{
   if (!req.file) return res.status(400).json({ ok:false });
   const url = `${APP_URL}/uploads/${req.file.filename}`;
   res.json({ ok:true, url });
