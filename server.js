@@ -1,452 +1,450 @@
-// server.js
-import express from 'express';
-import cors from 'cors';
-import bodyParser from 'body-parser';
-import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
-import { Telegraf, Markup } from 'telegraf';
+// server.js — единый файл сервера (ESM)
+import express from "express";
+import cors from "cors";
+import path from "path";
+import { fileURLToPath } from "url";
+import fs from "fs";
+import multer from "multer";
+import dotenv from "dotenv";
+import { Telegraf, Markup } from "telegraf";
+import pg from "pg";
 
 dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// ---------- ENV ----------
-const PORT = Number(process.env.PORT || 10000);
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const APP_URL = (process.env.APP_URL || '').replace(/\/+$/, '');
-const BOT_SECRET_PATH = process.env.BOT_SECRET_PATH || 'telegraf-9f2c1a';
+const PORT = process.env.PORT || 10000;
+const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
+const BOT_TOKEN = process.env.BOT_TOKEN || ""; // У вас уже есть
+const WEBHOOK_PATH = `telegraf-${Math.random().toString(36).slice(2, 7)}`;
+const SIX_HOURS = 6 * 60 * 60 * 1000;
 
-if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN не задан');
-  process.exit(1);
-}
-
-// ---------- PRISMA (с логами) ----------
-const prisma = new PrismaClient({
-  log: ['query', 'info', 'warn', 'error'],
-});
-
-// helper для BigInt -> Number
-const asNum = (v) => (typeof v === 'bigint' ? Number(v) : v);
-const code6 = () => Math.random().toString(36).slice(2, 8).toUpperCase();
-const addHours = (h) => new Date(Date.now() + h * 3600 * 1000);
-
-// ---------- EXPRESS ----------
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: '1mb' }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static('webapp'));
 
-// health/debug
-app.get('/healthz', (_req, res) => res.send('ok'));
-app.get('/debug/env', (_req, res) => {
-  res.json({
-    PORT,
-    APP_URL,
-    BOT_SECRET_PATH,
-    HAS_DB_URL: Boolean(process.env.DATABASE_URL),
-  });
-});
-app.get('/debug/db', async (_req, res) => {
-  try {
-    const r = await prisma.$queryRaw`SELECT 1 as ok`;
-    res.json({ ok: true, result: r });
-  } catch (e) {
-    console.error('DB PING ERROR:', e);
-    res.status(500).json({ ok: false, error: String(e) });
-  }
-});
+// ===== STATIC =====
+const WEB_DIR = path.join(__dirname, "webapp");
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use(express.static(WEB_DIR));
+app.get("/", (_, res) => res.sendFile(path.join(WEB_DIR, "index.html")));
 
-// ---------- TTL cleaner ----------
-setInterval(async () => {
-  try {
-    const r = await prisma.game.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-    if (r.count) console.log('🧹 cleanupExpired:', r.count);
-  } catch (e) {
-    console.error('cleanupExpired error:', e);
-  }
-}, 60_000);
+// ===== DB (Postgres via pg) + in-memory fallback =====
+let db = null;
+let mem = {
+  games: new Map(), // code -> game
+  byId: new Map(),  // id -> game
+  seq: 1,
+};
+const hasDB = !!process.env.DATABASE_URL;
+if (hasDB) {
+  const { Pool } = pg;
+  db = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  db.on("error", (e) => console.error("pg error:", e));
+  console.log("✅ Postgres pool created");
+}
 
-// ---------- API: STATE (для мини-аппы) ----------
-app.get('/api/state', async (req, res) => {
-  try {
-    const code = String(req.query.code || '').toUpperCase();
-    const me = req.query.me ? String(req.query.me) : null;
-    if (!code) return res.json({ ok: true, exists: false });
+// create uploads dir
+fs.mkdirSync(path.join(__dirname, "uploads"), { recursive: true });
 
-    const game = await prisma.game.findUnique({
-      where: { code },
-      include: {
-        players: { orderBy: { createdAt: 'asc' } },
-        locations: true,
-        items: true,
-        messages: { orderBy: { at: 'asc' } },
-        rolls: { orderBy: { at: 'asc' } },
-      },
-    });
-    if (!game) return res.json({ ok: true, exists: false });
+// ===== helper SQL (idempotent) =====
+async function ensureSchema() {
+  if (!db) return;
+  const sql = `
+-- GAME
+create table if not exists public."Game"(
+  id bigserial primary key,
+  code text not null unique,
+  "gmId" text not null default '',
+  title text,
+  started boolean not null default false,
+  "createdAt" timestamptz not null default now(),
+  "expiresAt" timestamptz not null default (now() + interval '6 hours')
+);
 
-    const players = game.players.map(p => ({
-      id: asNum(p.id),
-      tgId: p.tgId,
-      name: p.name,
-      avatar: p.avatar,
-      hp: p.hp,
-      gold: p.gold,
-      isGM: p.isGM,
-      locationId: p.locationId ?? null,
-      createdAt: p.createdAt,
-    }));
-    const you = me ? players.find(p => p.tgId === me) : null;
+-- PLAYER
+create table if not exists public."Player"(
+  id bigserial primary key,
+  "gameId" bigint not null references public."Game"(id) on delete cascade,
+  "tgId" text not null,
+  name text not null,
+  avatar text,
+  hp int not null default 10,
+  gold int not null default 0,
+  "isGM" boolean not null default false,
+  "locationId" bigint,
+  "revealCount" int not null default 0,
+  bio text,
+  sheet text,
+  "createdAt" timestamptz not null default now(),
+  unique ("gameId","tgId")
+);
 
-    res.json({
+-- LOCATION
+create table if not exists public."Location"(
+  id bigserial primary key,
+  "gameId" bigint not null references public."Game"(id) on delete cascade,
+  name text not null,
+  descr text,
+  "imageUrl" text,
+  "createdAt" timestamptz not null default now()
+);
+
+-- ITEM
+create table if not exists public."Item"(
+  id bigserial primary key,
+  "gameId" bigint not null references public."Game"(id) on delete cascade,
+  "ownerId" bigint references public."Player"(id) on delete set null,
+  "onFloor" boolean not null default false,
+  "locationId" bigint references public."Location"(id) on delete set null,
+  name text not null,
+  qty int not null default 1,
+  type text not null default 'misc',
+  "createdAt" timestamptz not null default now()
+);
+create index if not exists idx_item_game on public."Item"("gameId");
+create index if not exists idx_item_owner on public."Item"("ownerId");
+
+-- MESSAGE
+create table if not exists public."Message"(
+  id bigserial primary key,
+  "gameId" bigint not null references public."Game"(id) on delete cascade,
+  "authorId" bigint references public."Player"(id) on delete set null,
+  text text not null,
+  at timestamptz not null default now()
+);
+create index if not exists idx_message_game on public."Message"("gameId");
+
+-- ROLL
+create table if not exists public."Roll"(
+  id bigserial primary key,
+  "gameId" bigint not null references public."Game"(id) on delete cascade,
+  "playerId" bigint references public."Player"(id) on delete set null,
+  die int not null,
+  result int not null,
+  at timestamptz not null default now()
+);
+create index if not exists idx_roll_game on public."Roll"("gameId");
+`;
+  await db.query(sql);
+  console.log("✅ Schema ensured");
+}
+await ensureSchema().catch(e => console.error("ensureSchema:", e.message));
+
+// ===== memory helpers =====
+function newCode() {
+  const a = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+  let out = "";
+  for (let i = 0; i < 6; i++) out += a[Math.floor(Math.random() * a.length)];
+  return out;
+}
+function now() { return Date.now(); }
+
+// ===== GAME READ =====
+async function getGameByCode(code, meId = "") {
+  if (db) {
+    const g = await db.query(`select * from "Game" where code=$1`, [code]);
+    if (g.rowCount === 0) return { exists: false };
+    const game = g.rows[0];
+
+    const players = (await db.query(`select * from "Player" where "gameId"=$1 order by id`, [game.id])).rows;
+    const locations = (await db.query(`select * from "Location" where "gameId"=$1 order by id`, [game.id])).rows;
+    const items = (await db.query(`select * from "Item" where "gameId"=$1 order by id`, [game.id])).rows;
+    const messages = (await db.query(`select * from "Message" where "gameId"=$1 order by id desc limit 50`, [game.id])).rows.reverse();
+
+    // раскрытие предметов «на полу» по revealCount каждого игрока
+    const you = players.find(p => String(p.tgid) === String(meId)) || null;
+    let floorItems = items.filter(i => i.onfloor);
+    if (you) {
+      const sameLoc = (i) => !i.locationid || i.locationid === you.locationid;
+      floorItems = floorItems.filter(sameLoc)
+                             .slice(0, you.revealcount || 0);
+    } else {
+      floorItems = []; // не показываем без игрока
+    }
+
+    return {
       ok: true,
       exists: true,
-      code: game.code,
-      gmId: game.gmId,
-      started: game.started,
-      expiresAt: game.expiresAt,
-      you,
+      ...game,
       players,
-      locations: game.locations.map(l => ({
-        id: asNum(l.id),
-        name: l.name,
-        descr: l.descr,
-        imageUrl: l.imageUrl,
-      })),
-      items: game.items.map(i => ({
-        id: asNum(i.id),
-        name: i.name,
-        qty: i.qty,
-        ownerId: i.ownerId ? asNum(i.ownerId) : null,
-        locationId: i.locationId ? asNum(i.locationId) : null,
-        onFloor: i.onFloor,
-        type: i.type,
-      })),
-      messages: game.messages.map(m => ({
-        id: asNum(m.id),
-        authorId: m.authorId ? asNum(m.authorId) : null,
-        text: m.text,
-        at: m.at,
-      })),
-      rolls: game.rolls.map(r => ({
-        id: asNum(r.id),
-        playerId: r.playerId ? asNum(r.playerId) : null,
-        die: r.die,
-        result: r.result,
-        at: r.at,
-      })),
-    });
-  } catch (e) {
-    console.error('GET /api/state error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ---------- API: LOBBY JOIN ----------
-app.post('/api/lobby/join', async (req, res) => {
-  try {
-    const { code, tgId, name, avatar } = req.body || {};
-    if (!code || !tgId || !name) return res.status(400).json({ ok: false, error: 'BAD_PAYLOAD' });
-
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-
-    const player = await prisma.player.upsert({
-      where: { gameId_tgId: { gameId: game.id, tgId: String(tgId) } },
-      update: { name: String(name).slice(0, 64), avatar: avatar ? String(avatar).slice(0, 64) : null },
-      create: { gameId: game.id, tgId: String(tgId), name: String(name).slice(0, 64), avatar: avatar ? String(avatar).slice(0, 64) : null },
-    });
-
-    res.json({
-      ok: true,
-      player: {
-        id: asNum(player.id),
-        tgId: player.tgId,
-        name: player.name,
-        avatar: player.avatar,
-        hp: player.hp,
-        gold: player.gold,
-        isGM: player.isGM,
-      },
-    });
-  } catch (e) {
-    console.error('POST /api/lobby/join error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ---------- API: GM ----------
-app.get('/api/gm/players', async (req, res) => {
-  try {
-    const code = String(req.query.code || '').toUpperCase();
-    const me = String(req.query.me || '');
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== me) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const players = await prisma.player.findMany({ where: { gameId: game.id }, orderBy: { createdAt: 'asc' } });
-    res.json({
-      ok: true,
-      players: players.map(p => ({
-        id: asNum(p.id),
-        name: p.name,
-        tgId: p.tgId,
-        avatar: p.avatar,
-        gold: p.gold,
-        hp: p.hp,
-        isGM: p.isGM,
-        locationId: p.locationId ?? null,
-      })),
-    });
-  } catch (e) {
-    console.error('GET /api/gm/players error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-app.post('/api/gm/grant-gold', async (req, res) => {
-  try {
-    const { code, me, playerId, delta } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== String(me)) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const p = await prisma.player.update({
-      where: { id: Number(playerId) },
-      data: { gold: { increment: Number(delta || 0) } },
-    });
-    res.json({ ok: true, gold: p.gold });
-  } catch (e) {
-    console.error('POST /api/gm/grant-gold error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-app.post('/api/gm/grant-hp', async (req, res) => {
-  try {
-    const { code, me, playerId, delta } = req.body || {};
-    const game = await prisma.game.findUnique({ where: { code: String(code).toUpperCase() } });
-    if (!game) return res.status(404).json({ ok: false, error: 'GAME_NOT_FOUND' });
-    if (String(game.gmId) !== String(me)) return res.status(403).json({ ok: false, error: 'FORBIDDEN' });
-
-    const p = await prisma.player.update({
-      where: { id: Number(playerId) },
-      data: { hp: { increment: Number(delta || 0) } },
-    });
-    res.json({ ok: true, hp: p.hp });
-  } catch (e) {
-    console.error('POST /api/gm/grant-hp error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// создать локацию
-app.post('/api/location', async (req, res) => {
-  try {
-    const { gameId, name, descr, imageUrl } = req.body || {};
-    const loc = await prisma.location.create({ data: { gameId: Number(gameId), name, descr, imageUrl } });
-    res.json({ ok: true, location: { ...loc, id: asNum(loc.id) } });
-  } catch (e) {
-    console.error('POST /api/location error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// создать предмет
-app.post('/api/item', async (req, res) => {
-  try {
-    const { gameId, name, qty, ownerId, locationId, onFloor, type } = req.body || {};
-    const item = await prisma.item.create({
-      data: {
-        gameId: Number(gameId),
-        name: String(name),
-        qty: Number(qty || 1),
-        ownerId: ownerId ? Number(ownerId) : null,
-        locationId: locationId ? Number(locationId) : null,
-        onFloor: Boolean(onFloor),
-        type: type ? String(type) : 'misc',
-      },
-    });
-    res.json({ ok: true, item: { ...item, id: asNum(item.id) } });
-  } catch (e) {
-    console.error('POST /api/item error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// чат
-app.post('/api/message', async (req, res) => {
-  try {
-    const { gameId, authorId, text } = req.body || {};
-    const msg = await prisma.message.create({
-      data: {
-        gameId: Number(gameId),
-        authorId: authorId ? Number(authorId) : null,
-        text: String(text).slice(0, 500),
-      },
-    });
-    res.json({ ok: true, message: { ...msg, id: asNum(msg.id) } });
-  } catch (e) {
-    console.error('POST /api/message error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// броски
-app.post('/api/roll', async (req, res) => {
-  try {
-    const { gameId, playerId, die } = req.body || {};
-    const d = Number(die || 20);
-    const result = 1 + Math.floor(Math.random() * d);
-    const roll = await prisma.roll.create({
-      data: { gameId: Number(gameId), playerId: playerId ? Number(playerId) : null, die: d, result },
-    });
-    res.json({ ok: true, roll: { ...roll, id: asNum(roll.id) } });
-  } catch (e) {
-    console.error('POST /api/roll error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// старт игры: started=true + всех игроков в указанную локацию
-app.post('/api/game/:id/start', async (req, res) => {
-  try {
-    const gameId = Number(req.params.id);
-    const { locationId } = req.body || {};
-    await prisma.game.update({ where: { id: gameId }, data: { started: true } });
-    if (locationId) {
-      await prisma.player.updateMany({ where: { gameId }, data: { locationId: Number(locationId) } });
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('POST /api/game/:id/start error:', e);
-    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
-  }
-});
-
-// ---------- TELEGRAM BOT ----------
-const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 12000 });
-const safeReply = async (ctx, f) => { try { await f(); } catch (e) { console.error('bot reply error:', e?.response?.description || e.message || e); } };
-
-// диплинк /start <code>
-bot.start(async (ctx) => {
-  try {
-    const payload = ctx.startPayload;
-    if (!payload) return safeReply(ctx, () => ctx.reply('Привет! /new — создать игру, /join CODE — присоединиться'));
-    const code = String(payload).toUpperCase();
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return safeReply(ctx, () => ctx.reply('❌ Игра не найдена'));
-
-    const tgId = String(ctx.from.id);
-    await prisma.player.upsert({
-      where: { gameId_tgId: { gameId: game.id, tgId } },
-      update: {},
-      create: { gameId: game.id, tgId, name: ctx.from.first_name || 'Игрок' },
-    });
-
-    const openUrl = APP_URL ? `${APP_URL}/?code=${code}&role=player` : undefined;
-    return safeReply(ctx, () => ctx.reply(
-      `✅ Ты присоединился к игре ${code}`,
-      openUrl ? Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑аппу', openUrl)]]) : undefined
-    ));
-  } catch (e) {
-    console.error('bot.start error:', e);
-  }
-});
-
-// /new — создать игру и сделать автора ГМ
-bot.command('new', async (ctx) => {
-  try {
-    const gmId = String(ctx.from.id);
-    let code = '';
-    for (let i = 0; i < 8; i++) {
-      const c = code6();
-      const exist = await prisma.game.findUnique({ where: { code: c } });
-      if (!exist) { code = c; break; }
-    }
-    if (!code) code = code6();
-
-    const game = await prisma.game.create({
-      data: { code, gmId, started: false, expiresAt: addHours(6) },
-    });
-
-    await prisma.player.upsert({
-      where: { gameId_tgId: { gameId: game.id, tgId: gmId } },
-      update: { isGM: true, name: 'GM', avatar: '🎲' },
-      create: { gameId: game.id, tgId: gmId, name: 'GM', avatar: '🎲', isGM: true },
-    });
-
-    const deepLink = `https://t.me/${ctx.botInfo.username}?start=${game.code}`;
-    await safeReply(ctx, () => ctx.reply(
-      `Создана игра. Код: ${game.code}\nОтправь ссылку игрокам:`,
-      Markup.inlineKeyboard([[Markup.button.url('🔗 Присоединиться', deepLink)]])
-    ));
-    const gmUrl = APP_URL ? `${APP_URL}/?code=${game.code}&role=gm` : undefined;
-    if (gmUrl) await safeReply(ctx, () => ctx.reply('ГМ‑панель:', Markup.inlineKeyboard([[Markup.button.webApp('Открыть (ГМ)', gmUrl)]])));
-  } catch (e) {
-    console.error('/new error:', e);
-    await safeReply(ctx, () => ctx.reply('Ошибка при создании игры.'));
-  }
-});
-
-// /join CODE — быстрый вход
-bot.command('join', async (ctx) => {
-  try {
-    const parts = (ctx.message?.text || '').trim().split(/\s+/);
-    const code = (parts[1] || '').toUpperCase();
-    if (!code) return safeReply(ctx, () => ctx.reply('Использование: /join CODE'));
-
-    const game = await prisma.game.findUnique({ where: { code } });
-    if (!game) return safeReply(ctx, () => ctx.reply('Игра не найдена'));
-
-    const openUrl = APP_URL ? `${APP_URL}/?code=${code}&role=player` : undefined;
-    await safeReply(ctx, () => ctx.reply(
-      `Комната: ${code}`,
-      openUrl ? Markup.inlineKeyboard([[Markup.button.webApp('Открыть мини‑аппу', openUrl)]]) : undefined
-    ));
-  } catch (e) {
-    console.error('/join error:', e);
-    await safeReply(ctx, () => ctx.reply('Ошибка при /join.'));
-  }
-});
-
-bot.on('message', (ctx, next) => {
-  try { console.log('📩 update:', JSON.stringify(ctx.update)); } catch {}
-  return next();
-});
-
-// быстрый 200 и асинхронная обработка
-const webhookRoute = `/telegraf/${BOT_SECRET_PATH}`;
-app.post(webhookRoute, (req, res) => { res.status(200).end(); bot.handleUpdate(req.body).catch(e => console.error('handleUpdate error:', e)); });
-
-// ---------- START ----------
-app.listen(PORT, async () => {
-  console.log(`🌐 Web server on ${PORT}`);
-  try {
-    await prisma.$connect();
-    await prisma.$queryRaw`SELECT 1 as ok`; // ping
-    console.log('✅ Prisma connected & DB ping ok');
-  } catch (e) {
-    console.error('❌ Prisma connect/ping error:', e);
-  }
-
-  const fullWebhook = (APP_URL ? `${APP_URL}${webhookRoute}` : null);
-  if (fullWebhook) {
-    try {
-      await bot.telegram.setWebhook(fullWebhook, { allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
-      console.log('🔗 Webhook set:', fullWebhook);
-    } catch (e) {
-      console.error('❌ setWebhook error:', e?.response?.description || e.message || e);
-    }
+      locations,
+      items,          // полный список нужен ГМ
+      floorItems,     // уже раскрытое игроку
+      messages,
+      you
+    };
   } else {
-    console.warn('⚠️ APP_URL не задан — вебхук не установлен. Укажи APP_URL в .env');
+    // memory
+    const game = mem.games.get(code);
+    if (!game) return { exists: false };
+    const you = game.players.find(p => String(p.tgId) === String(meId)) || null;
+    const items = game.items;
+    let floorItems = items.filter(i => i.onFloor && (!you || !i.locationId || i.locationId === you.locationId));
+    if (you) floorItems = floorItems.slice(0, you.revealCount || 0);
+    return { ok: true, exists: true, ...game, items, floorItems, you };
+  }
+}
+
+// ===== periodic cleanup (DB) =====
+async function cleanupExpired() {
+  if (!db) return;
+  try {
+    await db.query(`delete from "Game" where "expiresAt" < now()`);
+  } catch (e) {
+    console.error("cleanupExpired(DB):", e.code || e.message);
+  }
+}
+setInterval(cleanupExpired, 10 * 60 * 1000);
+
+// ===== API =====
+
+// STATE
+app.get("/api/state", async (req, res) => {
+  const code = (req.query.code || "").toUpperCase();
+  const me = String(req.query.me || "");
+  const data = await getGameByCode(code, me);
+  res.json(data);
+});
+
+// LOBBY JOIN
+app.post("/api/lobby/join", async (req, res) => {
+  const { code, tgId, name, avatar } = req.body || {};
+  if (!code || !tgId) return res.status(400).json({ ok: false });
+
+  if (db) {
+    // upsert game by code
+    let g = await db.query(`select * from "Game" where code=$1`, [code]);
+    if (g.rowCount === 0) {
+      const ins = await db.query(
+        `insert into "Game"(code,"gmId","createdAt","expiresAt") values ($1,$2,now(), now()+ interval '6 hours') returning *`,
+        [code, ""]
+      );
+      g = { rows: ins.rows };
+    } else {
+      await db.query(`update "Game" set "expiresAt"=now()+ interval '6 hours' where code=$1`, [code]);
+    }
+    const game = g.rows[0];
+
+    // upsert player
+    const p = await db.query(`select * from "Player" where "gameId"=$1 and "tgId"=$2`, [game.id, String(tgId)]);
+    if (p.rowCount === 0) {
+      await db.query(
+        `insert into "Player"("gameId","tgId",name,avatar,hp,gold,"isGM","revealCount","createdAt")
+         values ($1,$2,$3,$4,10,0,false,0,now())`,
+        [game.id, String(tgId), name || "Hero", avatar || "🙂"]
+      );
+    } else {
+      await db.query(`update "Player" set name=$1, avatar=$2 where id=$3`, [name || p.rows[0].name, avatar || p.rows[0].avatar, p.rows[0].id]);
+    }
+    return res.json({ ok: true });
+  } else {
+    // memory
+    let game = mem.games.get(code);
+    if (!game) {
+      game = {
+        id: mem.seq++,
+        code,
+        gmId: "",
+        title: "",
+        started: false,
+        createdAt: now(),
+        expiresAt: now() + SIX_HOURS,
+        players: [],
+        locations: [],
+        items: [],
+        messages: []
+      };
+      mem.games.set(code, game);
+      mem.byId.set(game.id, game);
+    } else {
+      game.expiresAt = now() + SIX_HOURS;
+    }
+    let pl = game.players.find(p => p.tgId === String(tgId));
+    if (!pl) {
+      pl = { id: mem.seq++, gameId: game.id, tgId: String(tgId), name: name || "Hero", avatar: avatar || "🙂", hp: 10, gold: 0, isGM: false, locationId: null, revealCount: 0, bio: "", sheet: "" };
+      game.players.push(pl);
+    } else {
+      pl.name = name || pl.name; pl.avatar = avatar || pl.avatar;
+    }
+    return res.json({ ok: true });
   }
 });
 
-// глобальные ловушки
-process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason);
+// CHAT
+app.post("/api/message", async (req, res) => {
+  const { gameId, authorId, text } = req.body || {};
+  if (!text) return res.status(400).json({ ok: false });
+  if (db) {
+    await db.query(`insert into "Message"("gameId","authorId",text,at) values ($1,$2,$3,now())`,
+      [gameId, authorId || null, text]);
+  } else {
+    const g = mem.byId.get(gameId); if (!g) return res.json({ ok:false });
+    g.messages.push({ id: mem.seq++, gameId, authorId: authorId || null, text, at: new Date().toISOString() });
+  }
+  res.json({ ok: true });
 });
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
+
+// ROLL
+app.post("/api/roll", async (req, res) => {
+  const { gameId, playerId, die = 20 } = req.body || {};
+  const result = 1 + Math.floor(Math.random() * Number(die || 20));
+  if (db) {
+    const ins = await db.query(`insert into "Roll"("gameId","playerId",die,result,at) values ($1,$2,$3,$4,now()) returning *`,
+      [gameId, playerId || null, Number(die || 20), result]);
+    return res.json({ ok: true, roll: ins.rows[0] });
+  } else {
+    res.json({ ok: true, roll: { id: mem.seq++, gameId, playerId, die, result, at: new Date().toISOString() } });
+  }
+});
+
+// LOOK (осмотреться — +1 предмет игроку)
+app.post("/api/look", async (req, res) => {
+  const { gameId, playerId } = req.body || {};
+  if (db) {
+    await db.query(`update "Player" set "revealCount"=coalesce("revealCount",0)+1 where id=$1 and "gameId"=$2`, [playerId, gameId]);
+  } else {
+    const g = mem.byId.get(gameId); if (!g) return res.json({ ok:false });
+    const p = g.players.find(p => p.id === Number(playerId)); if (!p) return res.json({ ok:false });
+    p.revealCount = (p.revealCount || 0) + 1;
+  }
+  res.json({ ok: true });
+});
+
+// GM: HP/GOLD
+app.post("/api/gm/grant-hp", async (req, res) => {
+  const { playerId, delta } = req.body || {};
+  if (db) {
+    await db.query(`update "Player" set hp = greatest(0, hp + $1) where id=$2`, [Number(delta || 0), Number(playerId)]);
+  } else {
+    for (const g of mem.games.values()) {
+      const p = g.players.find(p => p.id === Number(playerId));
+      if (p) p.hp = Math.max(0, p.hp + Number(delta || 0));
+    }
+  }
+  res.json({ ok: true });
+});
+app.post("/api/gm/grant-gold", async (req, res) => {
+  const { playerId, delta } = req.body || {};
+  if (db) {
+    await db.query(`update "Player" set gold = greatest(0, gold + $1) where id=$2`, [Number(delta || 0), Number(playerId)]);
+  } else {
+    for (const g of mem.games.values()) {
+      const p = g.players.find(p => p.id === Number(playerId));
+      if (p) p.gold = Math.max(0, p.gold + Number(delta || 0));
+    }
+  }
+  res.json({ ok: true });
+});
+
+// GM: задать bio/sheet игроку
+app.post("/api/gm/set-player-info", async (req, res) => {
+  const { playerId, bio = "", sheet = "" } = req.body || {};
+  if (db) {
+    await db.query(`update "Player" set bio=$1, sheet=$2 where id=$3`, [bio, sheet, Number(playerId)]);
+  } else {
+    for (const g of mem.games.values()) {
+      const p = g.players.find(p => p.id === Number(playerId));
+      if (p) { p.bio = bio; p.sheet = sheet; }
+    }
+  }
+  res.json({ ok: true });
+});
+
+// LOCATION create
+app.post("/api/location", async (req, res) => {
+  const { gameId, name, descr = "", imageUrl = null } = req.body || {};
+  if (!gameId || !name) return res.status(400).json({ ok: false });
+  if (db) {
+    const ins = await db.query(
+      `insert into "Location"("gameId",name,descr,"imageUrl","createdAt") values ($1,$2,$3,$4,now()) returning *`,
+      [gameId, name, descr, imageUrl]
+    );
+    return res.json({ ok: true, location: ins.rows[0] });
+  } else {
+    const g = mem.byId.get(gameId); if (!g) return res.json({ ok:false });
+    const loc = { id: mem.seq++, gameId, name, descr, imageUrl, createdAt: new Date().toISOString() };
+    g.locations.push(loc);
+    res.json({ ok: true, location: loc });
+  }
+});
+
+// LOCATION file upload -> url
+const upload = multer({ dest: path.join(__dirname, "uploads") });
+app.post("/api/location/upload", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ ok:false });
+  const url = `${APP_URL}/uploads/${req.file.filename}`;
+  res.json({ ok:true, url });
+});
+
+// GM: создать предмет
+app.post("/api/item", async (req, res) => {
+  const { gameId, name, qty = 1, ownerId = null, onFloor = false, locationId = null } = req.body || {};
+  if (!gameId || !name) return res.status(400).json({ ok:false });
+  if (db) {
+    const ins = await db.query(
+      `insert into "Item"("gameId","ownerId","onFloor","locationId",name,qty,"createdAt")
+       values ($1,$2,$3,$4,$5,$6,now()) returning *`,
+      [gameId, ownerId, onFloor, locationId, name, Number(qty || 1)]
+    );
+    res.json({ ok:true, item: ins.rows[0] });
+  } else {
+    const g = mem.byId.get(gameId); if (!g) return res.json({ ok:false });
+    const it = { id: mem.seq++, gameId, ownerId, onFloor: !!onFloor, locationId, name, qty:Number(qty||1), createdAt:new Date().toISOString() };
+    g.items.push(it);
+    res.json({ ok:true, item: it });
+  }
+});
+
+// GM: старт игры + назначение локации игрокам
+app.post("/api/game/:id/start", async (req, res) => {
+  const gameId = Number(req.params.id);
+  const { locationId = null } = req.body || {};
+  if (db) {
+    await db.query(`update "Game" set started=true where id=$1`, [gameId]);
+    if (locationId) await db.query(`update "Player" set "locationId"=$1 where "gameId"=$2`, [locationId, gameId]);
+  } else {
+    const g = mem.byId.get(gameId); if (!g) return res.json({ ok:false });
+    g.started = true;
+    if (locationId) g.players.forEach(p => p.locationId = locationId);
+  }
+  res.json({ ok:true });
+});
+
+// ===== TELEGRAM (минимально, только /new) =====
+let bot = null;
+if (BOT_TOKEN) {
+  bot = new Telegraf(BOT_TOKEN);
+
+  bot.start((ctx) => ctx.reply("Команды:\n/new — создать игру\n/join ABC123 — войти кодом"));
+  bot.command("new", async (ctx) => {
+    const code = newCode();
+    if (db) {
+      await db.query(`insert into "Game"(code,"gmId","createdAt","expiresAt") values ($1,$2,now(),now()+ interval '6 hours')`,
+        [code, String(ctx.from.id)]);
+    } else {
+      const game = {
+        id: mem.seq++,
+        code, gmId: String(ctx.from.id),
+        title:"", started:false, createdAt: now(), expiresAt: now()+SIX_HOURS,
+        players:[], locations:[], items:[], messages:[]
+      };
+      mem.games.set(code, game); mem.byId.set(game.id, game);
+    }
+    ctx.reply(`Создана игра. Код: ${code}\nОткрой мини‑апп и продолжай.`, Markup.button.webApp("Открыть мини‑апп", `${APP_URL}/?code=${code}`));
+  });
+
+  // webhook
+  const wh = `/telegraf/${WEBHOOK_PATH}`;
+  app.use(wh, bot.webhookCallback(wh));
+  await bot.telegram.setWebhook(`${APP_URL}${wh}`);
+  console.log("🔗 Webhook set:", `${APP_URL}${wh}`);
+} else {
+  console.log("⚠️ BOT_TOKEN не задан — телеграм-бот отключён");
+}
+
+// ===== START =====
+app.listen(PORT, () => {
+  console.log("🌐 Web server on", PORT);
 });
