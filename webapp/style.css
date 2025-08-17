@@ -12,7 +12,6 @@ h1{font-size:20px;margin:0}
 .tabs button{background:var(--pill);border:0;color:#cfe5ff;padding:6px 10px;border-radius:999px;cursor:pointer}
 .tabs button.active{background:var(--accent);color:#06213b}
 .tabs.hidden{display:none}
-
 main{padding:14px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;box-shadow:var(--shadow)}
 h2{margin:0 0 8px} h3{margin:8px 0}
